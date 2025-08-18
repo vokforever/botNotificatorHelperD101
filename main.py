@@ -71,6 +71,7 @@ def check_single_instance():
             if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
                 print("❌ Another instance of the bot is already running!")
                 print("Please close the other instance first.")
+                print("💡 Если это ошибка, попробуйте перезапустить систему или использовать команду cleanup")
                 return True
         else:
             # Unix-like systems
@@ -85,7 +86,12 @@ def check_single_instance():
                     return True
                 except OSError:
                     # Process not running, stale lock file
-                    pass
+                    print("🧹 Обнаружен устаревший lock файл, удаляю...")
+                    try:
+                        os.remove(lock_file)
+                        print("✅ Lock файл удален")
+                    except Exception as e:
+                        print(f"⚠️ Не удалось удалить lock файл: {e}")
             
             # Create new lock file
             with open(lock_file, 'w') as f:
@@ -3001,13 +3007,11 @@ async def help_command(update: Update, context: CallbackContext):
 **2. 🏢 Проекты и заказчики:**
 Укажите название проекта в начале сообщения:
 • "жигулинароща\nОплачено до: 26.08.2025\nУслуга: DNS-master\nСтоимость: 1 402 ₽"
-• "mycompany\nGitHub Pro до 31.12.2024\nСтоимость: $4/месяц"
 
 **3. 🌐 Провайдеры и сервисы:**
 Укажите название провайдера/сервиса для оплаты:
 • "nic.ru" - для доменных услуг
-• "AWS" - для облачных сервисов
-• "GitHub" - для подписок на код
+
 
 **4. 📸 Скриншоты:**
 Отправьте скриншот с информацией о сервисе:
@@ -3575,6 +3579,56 @@ async def add_test_data_command(update: Update, context: CallbackContext):
             parse_mode='Markdown'
         )
 
+# Команда для очистки Windows mutex (для решения проблем с множественными экземплярами)
+async def cleanup_mutex_command(update: Update, context: CallbackContext):
+    """Очищает Windows mutex для решения проблем с множественными экземплярами"""
+    
+    if not ADMIN_ID or update.message.from_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    try:
+        if sys.platform == 'win32':
+            # На Windows пытаемся очистить mutex
+            mutex_name = "Global\\TelegramBotMutex_" + os.path.basename(__file__)
+            
+            # Пытаемся открыть существующий mutex
+            try:
+                handle = ctypes.windll.kernel32.OpenMutexW(0x00020000, False, mutex_name)  # SYNCHRONIZE
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    await update.message.reply_text(
+                        "🧹 **Windows Mutex очищен**\n\n"
+                        "✅ Mutex был найден и закрыт.\n"
+                        "Теперь вы можете перезапустить бота.",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await update.message.reply_text(
+                        "ℹ️ **Mutex не найден**\n\n"
+                        "Активный mutex не обнаружен.\n"
+                        "Проблема может быть в другом месте.",
+                        parse_mode='Markdown'
+                    )
+            except Exception as e:
+                await update.message.reply_text(
+                    f"⚠️ **Ошибка при очистке mutex:** {str(e)}\n\n"
+                    "Попробуйте перезапустить систему.",
+                    parse_mode='Markdown'
+                )
+        else:
+            await update.message.reply_text(
+                "ℹ️ **Команда доступна только на Windows**\n\n"
+                "На других системах используйте обычную команду cleanup.",
+                parse_mode='Markdown'
+            )
+            
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ **Ошибка при очистке mutex:** {str(e)}",
+            parse_mode='Markdown'
+        )
+
 # Команда для очистки callback хранилища (для отладки)
 async def cleanup_storage_command(update: Update, context: CallbackContext):
     """Очищает callback хранилище и показывает статистику"""
@@ -3792,6 +3846,7 @@ async def main():
     application.add_handler(CommandHandler("update_cost", update_cost_command)) # Добавляем команду для обновления стоимости
     application.add_handler(CommandHandler("edit_cost", edit_cost_command)) # Добавляем команду для умного редактирования стоимости через ИИ
     application.add_handler(CommandHandler("cleanup", cleanup_storage_command)) # Добавляем команду для очистки хранилища
+    application.add_handler(CommandHandler("cleanup_mutex", cleanup_mutex_command)) # Добавляем команду для очистки Windows mutex
     application.add_handler(CommandHandler("storage", check_storage_command)) # Добавляем команду для проверки состояния хранилища
     application.add_handler(CommandHandler("debug_cleanup", debug_cleanup_command)) # Добавляем команду для отладочной очистки
     application.add_handler(CommandHandler("add_test_data", add_test_data_command)) # Добавляем команду для добавления тестовых данных
@@ -3808,8 +3863,17 @@ async def main():
     # Инициализируем приложение перед отправки уведомлений
     await application.initialize()
     
-    # Отправляем уведомление о запуске
-    await send_bot_start_notification()
+    # Отправляем уведомление о запуске (после полной инициализации)
+    try:
+        # Добавляем timeout для уведомления о запуске
+        await asyncio.wait_for(send_bot_start_notification(), timeout=30.0)
+        print("✅ Уведомление о запуске отправлено")
+    except asyncio.TimeoutError:
+        print("⚠️ Предупреждение: timeout при отправке уведомления о запуске (30 сек)")
+        # Продолжаем работу бота даже если уведомление не отправилось
+    except Exception as e:
+        print(f"⚠️ Предупреждение: не удалось отправить уведомление о запуске: {e}")
+        # Продолжаем работу бота даже если уведомление не отправилось
     
     try:
         # Запускаем планировщик уведомлений
