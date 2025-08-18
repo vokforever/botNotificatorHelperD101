@@ -6,12 +6,6 @@ WORKDIR /app
 
 # Копируем файл зависимостей
 COPY requirements.txt .
-
-# Устанавливаем системные зависимости
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
-
 # Устанавливаем зависимости Python
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -21,10 +15,6 @@ COPY main.py .
 # Создаем директорию для данных
 RUN mkdir -p data
 
-# Устанавливаем переменную окружения для работы в режиме API
-ENV USE_LOCAL=false
-
-# Переменные окружения с dummy значениями
 # Реальные значения должны быть настроены в Coolify в разделе "Variables" вашего сервиса
 ENV TELEGRAM_BOT_TOKEN="dummy" \
     SUPABASE_URL="dummy" \
