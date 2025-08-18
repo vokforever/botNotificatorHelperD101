@@ -4919,7 +4919,7 @@ async def handle_extension_confirmation(update: Update, context: CallbackContext
             return
         
         # Показываем индикатор "печатает..."
-        await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
+        await context.bot.send_chat_action(chat_id=query.message.chat.id, action="typing")
         
         # Получаем ID записи из Supabase (если был сохранен ранее)
         renewal_id = extension_data.get('supabase_renewal_id')
