@@ -2734,6 +2734,12 @@ async def handle_parsed_data_save(update: Update, context: CallbackContext):
                 project = parsed_data.get('project')
                 user_id = parsed_data.get('user_id')
                 
+                print(f"🔍 DEBUG: Мульти-доменные данные:")
+                print(f"   Домены: {domains}")
+                print(f"   Даты: {dates}")
+                print(f"   Проект: {project}")
+                print(f"   User ID: {user_id}")
+                
                 saved_count = 0
                 for i, domain in enumerate(domains):
                     # Получаем соответствующую дату
