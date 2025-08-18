@@ -41,8 +41,8 @@ def test_groq_api():
             print(f"✅ API доступен! Найдено {len(available_models)} моделей")
             
             # Проверяем нужные модели
-            text_model = "llama-3.1-8b-instant"
-            vision_model = "meta-llama/llama-4-scout-17b-16e-instruct"
+            text_model = "llama3-8b-8192"
+            vision_model = "llava-v1.5-7b-4096-preview"
             
             print(f"\n🔤 Текстовая модель {text_model}: {'✅' if text_model in available_models else '❌'}")
             print(f"👁️ Vision модель {vision_model}: {'✅' if vision_model in available_models else '❌'}")
@@ -75,7 +75,7 @@ def test_groq_chat():
     
     # Тестируем парсинг сервиса
     data = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama3-8b-8192",
         "messages": [
             {
                 "role": "system", 

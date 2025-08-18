@@ -378,8 +378,296 @@ def update_statistics(checks_increment=0, notifications_increment=0):
 
 # Константы для Groq API
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_TEXT_MODEL = "llama-3.1-8b-instant"  # Быстрая текстовая модель
-GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Vision модель
+GROQ_TEXT_MODEL = "llama3-8b-8192"  # Стабильная текстовая модель
+GROQ_VISION_MODEL = "llava-v1.5-7b-4096-preview"  # Корректная Vision модель
+
+# Загрузка конфигурации моделей Groq из JSON c возможностью блокировки
+try:
+	import json as _json
+	from pathlib import Path as _Path
+	_config_path = _Path(__file__).with_name("groq_models_config.json")
+	if _config_path.exists():
+		with open(_config_path, "r", encoding="utf-8") as _f:
+			_groq_cfg = _json.load(_f)
+		if _groq_cfg.get("lock_models"):
+			# Если включена блокировка, используем предпочтительные модели из конфигурации
+			pref_text = _groq_cfg.get("preferred_text_model")
+			pref_vision = _groq_cfg.get("preferred_vision_model")
+			if pref_text:
+				GROQ_TEXT_MODEL = pref_text
+			if pref_vision:
+				GROQ_VISION_MODEL = pref_vision
+			print(f"🔒 Модели Groq зафиксированы конфигом: TEXT='{GROQ_TEXT_MODEL}', VISION='{GROQ_VISION_MODEL}'")
+except Exception as _cfg_err:
+	print(f"⚠️ Не удалось загрузить конфигурацию моделей Groq: {_cfg_err}")
+
+# Определение функций для Function Calling
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_service",
+            "description": "Добавить новый сервис в базу данных",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Название сервиса"},
+                    "expires_at": {"type": "string", "description": "Дата окончания в формате YYYY-MM-DD"},
+                    "cost": {"type": "number", "description": "Стоимость в рублях"},
+                    "project": {"type": "string", "description": "Название проекта"},
+                    "provider": {"type": "string", "description": "Провайдер сервиса"}
+                },
+                "required": ["name", "expires_at"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_services",
+            "description": "Показать список сервисов с фильтрацией",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Фильтр по проекту"},
+                    "provider": {"type": "string", "description": "Фильтр по провайдеру"},
+                    "status": {"type": "string", "description": "Фильтр по статусу (active, paid, notified)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "extend_service",
+            "description": "Продлить срок действия сервиса",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "service_id": {"type": "integer", "description": "ID сервиса"},
+                    "period": {"type": "string", "description": "Период продления (1 month, 3 months, 1 year)"},
+                    "cost": {"type": "number", "description": "Новая стоимость (опционально)"}
+                },
+                "required": ["service_id", "period"]
+            }
+        }
+    }
+]
+
+# Функция для работы с Groq API и Function Calling
+async def groq_function_calling(text: str, user_id: int) -> dict:
+    """Отправляет запрос к Groq с поддержкой Function Calling"""
+    
+    # Получаем текущее время для промпта
+    current_time = get_current_datetime()
+    current_time_str = current_time.strftime("%d.%m.%Y %H:%M (МСК)")
+    
+    system_prompt = f"""Ты - умный помощник для управления сервисами и подписками.
+Текущее время: {current_time_str}
+
+Твоя задача - помогать пользователю управлять сервисами через естественный язык.
+Используй доступные функции для работы с базой данных.
+
+Правила:
+1. Всегда пытайся понять намерение пользователя
+2. Если нужно добавить сервис - используй функцию add_service
+3. Если нужно показать список - используй list_services
+4. Если нужно продлить сервис - используй extend_service
+5. Для дат всегда используй формат YYYY-MM-DD
+6. Для стоимостей используй числа (без символов)
+7. Если не хватает данных - попроси уточнить
+
+Примеры запросов:
+- "Добавь Netflix за 299 рублей до конца года"
+- "Покажи все сервисы для проекта ВЛАДОГРАД"
+- "Продли GitHub Pro на 3 месяца"
+- "Сколько стоит продлить домен прогрэсс.рф?"
+"""
+    
+    payload = {
+        "model": GROQ_TEXT_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ],
+        "tools": TOOLS,
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1000
+    }
+    
+    try:
+        response = requests.post(
+            f"{GROQ_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=payload
+        )
+        
+        if response.status_code != 200:
+            return {"content": f"Ошибка API: {response.status_code}"}
+        
+        result = response.json()
+        message = result["choices"][0]["message"]
+        
+        # Если есть вызовы функций
+        if "tool_calls" in message:
+            return {"tool_calls": message["tool_calls"]}
+        
+        # Иначе возвращаем текстовый ответ
+        return {"content": message["content"]}
+        
+    except Exception as e:
+        return {"content": f"Ошибка: {str(e)}"}
+
+# Исполнение функций
+async def execute_function(function_name: str, arguments: dict, user_id: int) -> str:
+    """Выполняет запрошенную функцию и возвращает результат"""
+    
+    try:
+        if function_name == "add_service":
+            # Валидация обязательных полей
+            if not arguments.get("name") or not arguments.get("expires_at"):
+                return "❌ Укажите название сервиса и дату окончания"
+            
+            # Подготовка данных
+            service_data = {
+                "name": arguments["name"],
+                "expires_at": arguments["expires_at"],
+                "user_id": user_id,
+                "status": "active",
+                "created_at": get_current_datetime_iso()
+            }
+            
+            # Опциональные поля
+            if "cost" in arguments:
+                service_data["cost"] = arguments["cost"]
+            if "project" in arguments:
+                service_data["project"] = arguments["project"]
+            if "provider" in arguments:
+                service_data["provider"] = arguments["provider"]
+            
+            # Добавление в базу
+            response = supabase.table("digital_notificator_services").insert(service_data).execute()
+            
+            if response.data:
+                return f"✅ Сервис '{arguments['name']}' успешно добавлен! Истекает {arguments['expires_at']}"
+            else:
+                return "❌ Ошибка при добавлении сервиса"
+        
+        elif function_name == "list_services":
+            # Формируем запрос
+            query = supabase.table("digital_notificator_services").select("*")
+            
+            # Применяем фильтры
+            if "project" in arguments:
+                query = query.eq("project", arguments["project"])
+            if "provider" in arguments:
+                query = query.eq("provider", arguments["provider"])
+            if "status" in arguments:
+                query = query.eq("status", arguments["status"])
+            
+            response = query.execute()
+            
+            if not response.data:
+                return "📭 Сервисы не найдены"
+            
+            # Формируем ответ
+            result = "📋 Список сервисов:\n\n"
+            total_cost = 0
+            
+            for service in response.data:
+                status_emoji = {"active": "🟢", "paid": "🔵", "notified": "🟡"}.get(service.get('status'), "⚪")
+                result += f"{status_emoji} {service['name']}"
+                
+                if service.get('project'):
+                    result += f" ({service['project']})"
+                
+                result += f" - до {service['expires_at']}"
+                
+                if service.get('cost'):
+                    result += f" 💰 {service['cost']}₽"
+                    if service.get('status') == 'active':
+                        total_cost += float(service['cost'])
+                result += "\n"
+            
+            if total_cost > 0:
+                result += f"\n💰 Общая стоимость активных: {total_cost:.2f}₽"
+            
+            return result
+        
+        elif function_name == "extend_service":
+            service_id = arguments["service_id"]
+            period = arguments["period"]
+            
+            # Рассчитываем новую дату
+            current_date = get_current_datetime()
+            if "year" in period:
+                new_date = current_date + timedelta(days=365)
+            elif "month" in period:
+                months = int(period.split()[0])
+                new_date = current_date + timedelta(days=30 * months)
+            else:
+                return "❌ Неверный формат периода. Используйте: '1 month', '3 months', '1 year'"
+            
+            # Обновляем сервис
+            update_data = {
+                "expires_at": new_date.strftime("%Y-%m-%d"),
+                "status": "active",
+                "last_notification": None,
+                "notification_date": None
+            }
+            
+            if "cost" in arguments:
+                update_data["cost"] = arguments["cost"]
+            
+            response = supabase.table("digital_notificator_services").update(update_data).eq("id", service_id).execute()
+            
+            if response.data:
+                service_name = response.data[0].get('name', 'Сервис')
+                return f"✅ Сервис '{service_name}' продлен до {new_date.strftime('%d.%m.%Y')}"
+            else:
+                return f"❌ Сервис с ID {service_id} не найден"
+        
+        return "❌ Неизвестная функция"
+    
+    except Exception as e:
+        return f"❌ Ошибка выполнения: {str(e)}"
+
+# Обработчик естественного языка с Function Calling
+async def handle_natural_language(update: Update, context: CallbackContext):
+    """Основной обработчик естественного языка с поддержкой Function Calling"""
+    text = update.message.text
+    user_id = update.message.from_user.id
+    
+    try:
+        # Показываем индикатор "печатает..."
+        await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
+        
+        # Отправляем запрос к Groq с Function Calling
+        response = await groq_function_calling(text, user_id)
+        
+        if response.get("tool_calls"):
+            # Выполняем запрошенные функции
+            results = []
+            for tool_call in response["tool_calls"]:
+                result = await execute_function(
+                    tool_call.function.name,
+                    json.loads(tool_call.function.arguments),
+                    user_id
+                )
+                results.append(result)
+            
+            # Отправляем результаты пользователю
+            await update.message.reply_text("\n\n".join(results))
+        else:
+            # Просто отвечаем текстом
+            await update.message.reply_text(response["content"])
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # Функция для обработки кнопки "Все оплачены" на старте
 async def handle_all_paid_startup(update: Update, context: CallbackContext):
@@ -973,7 +1261,8 @@ def recognize_screenshot(image_path: str) -> str:
                     }
                 ],
                 "max_tokens": 1000,
-                "temperature": 0.1
+                "temperature": 0.0,  # Минимальная температура для более точного распознавания
+                "top_p": 0.1  # Ограничиваем разнообразие ответов
             }
             
             response = requests.post(url, headers=headers, json=data)
@@ -1010,8 +1299,27 @@ async def handle_screenshot(update: Update, context: CallbackContext):
             )
             return
         
-        # Умно парсим распознанный текст
+        # Умно парсим распознанный текст через естественный язык
         user_id = update.message.from_user.id
+        
+        # Создаем временное сообщение для обработки через natural language handler
+        temp_update = type('Update', (), {
+            'message': type('Message', (), {
+                'text': recognized_text,
+                'from_user': type('User', (), {'id': user_id})(),
+                'chat': update.message.chat,
+                'message_id': update.message.message_id
+            })()
+        })()
+        
+        try:
+            # Пробуем обработать через естественный язык
+            await handle_natural_language(temp_update, context)
+            return
+        except Exception as nl_error:
+            print(f"🔍 DEBUG: Natural language handler failed for screenshot: {nl_error}")
+            # Если не получилось, используем старый метод
+        
         parsed_data = await smart_parse_service_message(recognized_text, user_id)
         
         if "error" in parsed_data:
@@ -2093,6 +2401,14 @@ async def handle_text_message(update: Update, context: CallbackContext):
     await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
     
     try:
+        # Сначала пробуем обработать через естественный язык с Function Calling
+        try:
+            await handle_natural_language(update, context)
+            return
+        except Exception as nl_error:
+            print(f"🔍 DEBUG: Natural language handler failed: {nl_error}")
+            # Если не получилось, используем старый метод
+        
         # Проверяем, есть ли выбранный проект в контексте пользователя
         selected_project = context.user_data.get('selected_project') if context.user_data else None
         
@@ -3866,8 +4182,7 @@ async def process_extension_command(text: str, user_id: int) -> dict:
 
 Твоя задача - извлечь из текста информацию о доменах/сервисах и периоде продления.
 
-**Формат ответа (строго JSON):**
-```json
+**Формат ответа (строго JSON без markdown):**
 {{
     "type": "extension_command",
     "domains": ["домен1.рф", "домен2.ru"],
@@ -3878,7 +4193,6 @@ async def process_extension_command(text: str, user_id: int) -> dict:
     "total_domains": 2,
     "command_text": "оригинальный текст команды"
 }}
-```
 
 **Правила обработки:**
 
@@ -3899,7 +4213,12 @@ async def process_extension_command(text: str, user_id: int) -> dict:
    - Несколько доменов: "домен1.рф, домен2.ru - продли на 3 месяца"
    - С переносами: "домен1.рф\nдомен2.ru\n- продли на год"
 
-**ВАЖНО:** Всегда возвращай валидный JSON без дополнительного текста!"""
+**КРИТИЧНО ВАЖНО:** 
+- Возвращай ТОЛЬКО валидный JSON без markdown разметки
+- Не добавляй никаких комментариев или пояснений
+- Не используй ```json или ``` блоки
+- JSON должен начинаться с {{ и заканчиваться }}
+- Всегда проверяй валидность JSON перед отправкой"""
 
     user_prompt = f"Проанализируй эту команду продления и извлеки информацию:\n\n{text}"
     
@@ -3917,7 +4236,10 @@ async def process_extension_command(text: str, user_id: int) -> dict:
                 {"role": "user", "content": user_prompt}
             ],
             "max_tokens": 1000,
-            "temperature": 0.1
+            "temperature": 0.0,  # Минимальная температура для более предсказуемых ответов
+            "top_p": 0.1,  # Ограничиваем разнообразие ответов
+            "frequency_penalty": 0.1,  # Минимизируем повторения
+            "presence_penalty": 0.1  # Поощряем краткость
         }
         
         response = requests.post(url, headers=headers, json=data)
@@ -3926,9 +4248,19 @@ async def process_extension_command(text: str, user_id: int) -> dict:
             result = response.json()
             content = result["choices"][0]["message"]["content"]
             
+            print(f"🔍 DEBUG: [GROQ AI Extension] Получен ответ от Groq: {content}")
+            
             # Пытаемся распарсить JSON ответ
             try:
-                parsed_result = json.loads(content)
+                # Очищаем ответ от возможных лишних символов
+                cleaned_content = content.strip()
+                if cleaned_content.startswith("```json"):
+                    cleaned_content = cleaned_content[7:]
+                if cleaned_content.endswith("```"):
+                    cleaned_content = cleaned_content[:-3]
+                cleaned_content = cleaned_content.strip()
+                
+                parsed_result = json.loads(cleaned_content)
                 
                 # Валидируем результат
                 if "domains" in parsed_result and "extension_period" in parsed_result:
@@ -3947,12 +4279,93 @@ async def process_extension_command(text: str, user_id: int) -> dict:
                     
             except json.JSONDecodeError as e:
                 print(f"🔍 DEBUG: [GROQ AI Extension] Ошибка парсинга JSON: {e}")
+                print(f"🔍 DEBUG: [GROQ AI Extension] Сырой ответ: {content}")
+                
+                # Пытаемся извлечь JSON из ответа с помощью regex
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        fallback_json = json_match.group(0)
+                        parsed_result = json.loads(fallback_json)
+                        
+                        if "domains" in parsed_result and "extension_period" in parsed_result:
+                            parsed_result["user_id"] = user_id
+                            parsed_result["total_domains"] = len(parsed_result["domains"])
+                            parsed_result["command_text"] = text
+                            
+                            print(f"🔍 DEBUG: [GROQ AI Extension] Успешно обработана команда через fallback")
+                            return parsed_result
+                    except:
+                        pass
+                
                 return {"error": f"Ошибка парсинга ответа от Groq AI: {str(e)}", "raw_response": content}
         else:
             return {"error": f"Ошибка API: {response.status_code}", "details": response.text}
             
     except Exception as e:
+        print(f"🔍 DEBUG: [GROQ AI Extension] Критическая ошибка: {e}")
+        
+        # Fallback: простой парсер для базовых команд
+        try:
+            fallback_result = parse_extension_fallback(text, user_id)
+            if fallback_result:
+                print(f"🔍 DEBUG: [GROQ AI Extension] Использован fallback парсер")
+                return fallback_result
+        except Exception as fallback_error:
+            print(f"🔍 DEBUG: [GROQ AI Extension] Fallback парсер тоже не сработал: {fallback_error}")
+        
         return {"error": f"Ошибка при обработке команды продления через Groq AI: {str(e)}"}
+
+# Fallback парсер для команд продления
+def parse_extension_fallback(text: str, user_id: int) -> dict:
+    """Простой парсер для команд продления без использования AI"""
+    
+    try:
+        # Извлекаем домены (строки с точками)
+        import re
+        domains = re.findall(r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+        
+        if not domains:
+            return None
+        
+        # Определяем период продления
+        extension_period = "1 year"
+        extension_days = 365
+        extension_months = 12
+        
+        if any(keyword in text.lower() for keyword in ['3 месяца', '3 мес', '3 мес.']):
+            extension_period = "3 months"
+            extension_days = 90
+            extension_months = 3
+        elif any(keyword in text.lower() for keyword in ['6 месяцев', '6 мес', '6 мес.']):
+            extension_period = "6 months"
+            extension_days = 180
+            extension_months = 6
+        elif any(keyword in text.lower() for keyword in ['месяц', '1 месяц']):
+            extension_period = "1 month"
+            extension_days = 30
+            extension_months = 1
+        elif any(keyword in text.lower() for keyword in ['2 месяца', '2 мес']):
+            extension_period = "2 months"
+            extension_days = 60
+            extension_months = 2
+        
+        return {
+            "type": "extension_command",
+            "domains": domains,
+            "extension_period": extension_period,
+            "extension_days": extension_days,
+            "extension_months": extension_months,
+            "parsing_method": "fallback_parser",
+            "total_domains": len(domains),
+            "command_text": text,
+            "user_id": user_id
+        }
+        
+    except Exception as e:
+        print(f"🔍 DEBUG: [Fallback Parser] Ошибка: {e}")
+        return None
 
 # Функция для продления доменов на основе команды
 async def extend_domains_from_command(extension_data: dict) -> dict:
