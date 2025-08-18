@@ -938,7 +938,12 @@ async def process_text_with_groq(text: str, task_type: str = "parse_service") ->
 async def smart_parse_service_message(text: str, user_id: int) -> dict:
     """Умно парсит сообщение о сервисе через Groq"""
     
-    # Сначала пытаемся распарсить через Groq
+    # Сначала проверяем, не является ли это сообщением о деньгах/бюджете
+    money_date_data = parse_money_and_days_message(text)
+    if money_date_data:
+        return money_date_data
+    
+    # Если это не сообщение о деньгах, используем обычный парсинг через Groq
     parsed_data = await process_text_with_groq(text, "parse_service")
     
     if "error" in parsed_data:
@@ -966,6 +971,90 @@ async def smart_parse_service_message(text: str, user_id: int) -> dict:
         parsed_data["suggestions"] = validation.get("suggestions", [])
     
     return parsed_data
+
+def parse_money_and_days_message(text: str) -> dict:
+    """Парсит сообщения о деньгах и количестве дней, автоматически рассчитывает дату окончания"""
+    
+    # Паттерны для распознавания сообщений о деньгах
+    money_patterns = [
+        # "Рубли Хватит примерно 9 952,51 ₽ на 247 дней"
+        r'рубл[ия]?\s+хватит\s+примерно\s+([\d\s,]+)\s*₽?\s+на\s+(\d+)\s+дн[ея]',
+        # "Хватит 9 952,51 ₽ на 247 дней"
+        r'хватит\s+([\d\s,]+)\s*₽?\s+на\s+(\d+)\s+дн[ея]',
+        # "9 952,51 ₽ на 247 дней"
+        r'([\d\s,]+)\s*₽\s+на\s+(\d+)\s+дн[ея]',
+        # "Бюджет: 9 952,51 ₽ на 247 дней"
+        r'бюджет[:\s]+([\d\s,]+)\s*₽?\s+на\s+(\d+)\s+дн[ея]',
+        # "Осталось 9 952,51 ₽ на 247 дней"
+        r'осталось\s+([\d\s,]+)\s*₽?\s+на\s+(\d+)\s+дн[ея]',
+        # "Достаточно 9 952,51 ₽ на 247 дней"
+        r'достаточно\s+([\d\s,]+)\s*₽?\s+на\s+(\d+)\s+дн[ея]',
+        # "Средств хватит на 247 дней: 9 952,51 ₽"
+        r'средств\s+хватит\s+на\s+(\d+)\s+дн[ея][:\s]+([\d\s,]+)\s*₽',
+        # "На 247 дней нужно 9 952,51 ₽"
+        r'на\s+(\d+)\s+дн[ея]\s+нужно\s+([\d\s,]+)\s*₽',
+        # "9 952,51 ₽ хватит на 247 дней"
+        r'([\d\s,]+)\s*₽\s+хватит\s+на\s+(\d+)\s+дн[ея]',
+    ]
+    
+    for pattern in money_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                # Извлекаем сумму и количество дней
+                if 'средств хватит' in pattern.lower():
+                    # Для паттерна "средств хватит на X дней: Y ₽"
+                    days = int(match.group(1))
+                    money_str = match.group(2)
+                elif 'на X дней нужно' in pattern.lower():
+                    # Для паттерна "на X дней нужно Y ₽"
+                    days = int(match.group(1))
+                    money_str = match.group(2)
+                else:
+                    # Для остальных паттернов
+                    money_str = match.group(1)
+                    days = int(match.group(2))
+                
+                # Очищаем сумму от пробелов и заменяем запятую на точку
+                money_str = money_str.replace(' ', '').replace(',', '.')
+                money = float(money_str)
+                
+                # Рассчитываем дату окончания
+                current_date = get_current_datetime()
+                end_date = current_date + timedelta(days=days)
+                end_date_str = end_date.strftime("%Y-%m-%d")
+                
+                # Формируем название сервиса на основе контекста
+                service_name = "Бюджетный сервис"
+                if "рубл" in text.lower():
+                    service_name = "Рублевый бюджет"
+                elif "бюджет" in text.lower():
+                    service_name = "Бюджет"
+                elif "средств" in text.lower():
+                    service_name = "Финансовые средства"
+                elif "осталось" in text.lower():
+                    service_name = "Остаток средств"
+                
+                return {
+                    "name": service_name,
+                    "expires_at": end_date_str,
+                    "user_id": None,  # Будет заполнено позже
+                    "description": f"Бюджет: {money:,.2f} ₽ на {days} дней. Автоматически рассчитано до {end_date.strftime('%d.%m.%Y')}",
+                    "cost": money,
+                    "project": "Бюджет",
+                    "provider": "Финансы",
+                    "parsing_method": "money_calculator",
+                    "calculated_days": days,
+                    "calculated_end_date": end_date_str,
+                    "money_amount": money
+                }
+                
+            except (ValueError, TypeError) as e:
+                print(f"Ошибка при парсинге денежного сообщения: {e}")
+                continue
+    
+    # Если не удалось распознать как денежное сообщение, возвращаем None
+    return None
 
 # Функция для простого парсинга (fallback)
 def simple_parse_service_message(text: str, user_id: int) -> dict:
@@ -1045,6 +1134,10 @@ async def handle_text_message(update: Update, context: CallbackContext):
         # Умно парсим сообщение
         parsed_data = await smart_parse_service_message(text, user_id)
         
+        # Если это денежное сообщение, заполняем user_id
+        if parsed_data and parsed_data.get('parsing_method') == 'money_calculator':
+            parsed_data['user_id'] = user_id
+        
         # Если проект выбран в контексте, добавляем его к данным
         if selected_project and not parsed_data.get('project'):
             parsed_data['project'] = selected_project
@@ -1085,37 +1178,49 @@ async def handle_text_message(update: Update, context: CallbackContext):
         print(f"🔍 DEBUG: Содержимое callback_data_storage: {list(callback_data_storage.keys())}")
         
         # Формируем сообщение для подтверждения
-        message = f"🤖 *Умный парсинг через Groq*\n\n"
-        
-        if parsed_data.get('project'):
-            message += f"🏢 **Проект:** {parsed_data.get('project')}\n"
-        
-        message += f"📋 **Название:** {parsed_data.get('name', 'Не указано')}\n"
-        
-        if parsed_data.get('provider'):
-            message += f"🌐 **Провайдер:** {parsed_data.get('provider')}\n"
-        
-        message += f"📅 **Дата окончания:** {parsed_data.get('expires_at', 'Не указана')}\n"
-        message += f"👤 **Пользователь:** {parsed_data.get('user_id', 'Не указан')}\n"
-        
-        if parsed_data.get('description'):
-            message += f"📝 **Описание:** {parsed_data.get('description', '')[:200]}...\n"
-        
-        if parsed_data.get('cost'):
-            message += f"💰 **Стоимость:** {parsed_data.get('cost', '')}\n"
-        
-        if parsed_data.get('validation_errors'):
-            message += f"\n⚠️ **Ошибки валидации:**\n"
-            for error in parsed_data['validation_errors']:
-                message += f"• {error}\n"
-        
-        if parsed_data.get('suggestions'):
-            message += f"\n💡 **Предложения:**\n"
-            for suggestion in parsed_data['suggestions']:
-                message += f"• {suggestion}\n"
-        
-        message += f"\n🔧 **Метод парсинга:** {parsed_data.get('parsing_method', 'unknown')}\n"
-        message += f"\nСохранить в базу данных?"
+        if parsed_data.get('parsing_method') == 'money_calculator':
+            # Специальное сообщение для денежных сообщений
+            message = f"💰 *Автоматический расчет бюджета*\n\n"
+            message += f"📋 **Название:** {parsed_data.get('name', 'Не указано')}\n"
+            message += f"💰 **Сумма:** {parsed_data.get('money_amount', 0):,.2f} ₽\n"
+            message += f"📅 **Количество дней:** {parsed_data.get('calculated_days', 0)} дней\n"
+            message += f"🎯 **Рассчитанная дата окончания:** {parsed_data.get('calculated_end_date', 'Не указана')}\n"
+            message += f"📝 **Описание:** {parsed_data.get('description', '')}\n"
+            message += f"🔧 **Метод парсинга:** Автоматический калькулятор\n"
+            message += f"\nСохранить бюджет в базу данных?"
+        else:
+            # Обычное сообщение для других типов сообщений
+            message = f"🤖 *Умный парсинг через Groq*\n\n"
+            
+            if parsed_data.get('project'):
+                message += f"🏢 **Проект:** {parsed_data.get('project')}\n"
+            
+            message += f"📋 **Название:** {parsed_data.get('name', 'Не указано')}\n"
+            
+            if parsed_data.get('provider'):
+                message += f"🌐 **Провайдер:** {parsed_data.get('provider')}\n"
+            
+            message += f"📅 **Дата окончания:** {parsed_data.get('expires_at', 'Не указана')}\n"
+            message += f"👤 **Пользователь:** {parsed_data.get('user_id', 'Не указан')}\n"
+            
+            if parsed_data.get('description'):
+                message += f"📝 **Описание:** {parsed_data.get('description', '')[:200]}...\n"
+            
+            if parsed_data.get('cost'):
+                message += f"💰 **Стоимость:** {parsed_data.get('cost', '')}\n"
+            
+            if parsed_data.get('validation_errors'):
+                message += f"\n⚠️ **Ошибки валидации:**\n"
+                for error in parsed_data['validation_errors']:
+                    message += f"• {error}\n"
+            
+            if parsed_data.get('suggestions'):
+                message += f"\n💡 **Предложения:**\n"
+                for suggestion in parsed_data['suggestions']:
+                    message += f"• {suggestion}\n"
+            
+            message += f"\n🔧 **Метод парсинга:** {parsed_data.get('parsing_method', 'unknown')}\n"
+            message += f"\nСохранить в базу данных?"
         
         print(f"🔍 DEBUG: [ТЕКСТ] Создаем кнопки с callback_id: {callback_id}")
         
@@ -1268,23 +1373,34 @@ async def handle_parsed_data_save(update: Update, context: CallbackContext):
                         del callback_data_storage[callback_id]
                     
                     # Формируем сообщение об успешном сохранении
-                    success_message = f"✅ **Данные успешно сохранены!**\n\n"
-                    
-                    if service_data.get('project'):
-                        success_message += f"🏢 **Проект:** {service_data['project']}\n"
-                    
-                    success_message += f"📋 **Сервис:** {service_data['name']}\n"
-                    
-                    if service_data.get('provider'):
-                        success_message += f"🌐 **Провайдер:** {service_data['provider']}\n"
-                    
-                    success_message += f"📅 **Дата окончания:** {service_data['expires_at']}\n"
-                    
-                    if service_data.get('cost'):
-                        success_message += f"💰 **Стоимость:** {service_data['cost']}\n"
-                    
-                    success_message += f"🔧 **Метод парсинга:** {service_data['parsing_method']}\n\n"
-                    success_message += "Сервис будет отслеживаться автоматически!"
+                    if service_data.get('parsing_method') == 'money_calculator':
+                        # Специальное сообщение для денежных сообщений
+                        success_message = f"✅ **Бюджет успешно сохранен!**\n\n"
+                        success_message += f"📋 **Название:** {service_data['name']}\n"
+                        success_message += f"💰 **Сумма:** {service_data['cost']:,.2f} ₽\n"
+                        success_message += f"📅 **Количество дней:** {service_data.get('calculated_days', 0)} дней\n"
+                        success_message += f"🎯 **Дата окончания:** {service_data['expires_at']}\n"
+                        success_message += f"🔧 **Метод парсинга:** Автоматический калькулятор\n\n"
+                        success_message += "Бюджет будет отслеживаться автоматически!"
+                    else:
+                        # Обычное сообщение для других типов сервисов
+                        success_message = f"✅ **Данные успешно сохранены!**\n\n"
+                        
+                        if service_data.get('project'):
+                            success_message += f"🏢 **Проект:** {service_data['project']}\n"
+                        
+                        success_message += f"📋 **Сервис:** {service_data['name']}\n"
+                        
+                        if service_data.get('provider'):
+                            success_message += f"🌐 **Провайдер:** {service_data['provider']}\n"
+                        
+                        success_message += f"📅 **Дата окончания:** {service_data['expires_at']}\n"
+                        
+                        if service_data.get('cost'):
+                            success_message += f"💰 **Стоимость:** {service_data['cost']}\n"
+                        
+                        success_message += f"🔧 **Метод парсинга:** {service_data['parsing_method']}\n\n"
+                        success_message += "Сервис будет отслеживаться автоматически!"
                     
                     await query.edit_message_text(success_message, parse_mode='Markdown')
                     print(f"✅ DEBUG: Данные успешно сохранены в БД")
@@ -1464,6 +1580,13 @@ async def help_command(update: Update, context: CallbackContext):
 • "Spotify Premium истекает через месяц"
 • "GitHub Pro до конца года"
 
+**1.1. 💰 Автоматический расчет бюджета:**
+Отправьте сообщение о деньгах и количестве дней:
+• "Рубли Хватит примерно 9 952,51 ₽ на 247 дней"
+• "Хватит 5000 ₽ на 30 дней"
+• "Бюджет: 15000 ₽ на 90 дней"
+• "Осталось 2500 ₽ на 15 дней"
+
 **2. 🏢 Проекты и заказчики:**
 Укажите название проекта в начале сообщения:
 • "жигулинароща\nОплачено до: 26.08.2025\nУслуга: DNS-master\nСтоимость: 1 402 ₽"
@@ -1540,6 +1663,7 @@ async def start_command(update: Update, context: CallbackContext):
 
 **Что я умею:**
 • 📝 **Умно парсить** текстовые сообщения через Groq AI
+• 💰 **Автоматически рассчитывать** даты окончания бюджета
 • 🏢 **Определять** проекты и заказчиков
 • 🌐 **Определять** провайдеров и сервисы для оплаты
 • 📸 **Распознавать** информацию на скриншотах
@@ -1551,8 +1675,9 @@ async def start_command(update: Update, context: CallbackContext):
 **Как начать:**
 1. Отправьте текстовое сообщение о сервисе
 2. Или отправьте скриншот с информацией
-3. Я автоматически извлеку нужные данные
-4. Подтвердите сохранение в базу
+3. Или отправьте сообщение о бюджете (например: "Хватит 5000 ₽ на 30 дней")
+4. Я автоматически извлеку нужные данные и рассчитаю даты
+5. Подтвердите сохранение в базу
 
 **Команды:**
 • `/help` - Подробная справка
