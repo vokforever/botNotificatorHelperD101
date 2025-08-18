@@ -943,7 +943,12 @@ async def smart_parse_service_message(text: str, user_id: int) -> dict:
     if money_date_data:
         return money_date_data
     
-    # Если это не сообщение о деньгах, используем обычный парсинг через Groq
+    # Затем проверяем специальные случаи (хостинг, домены и т.д.)
+    special_service_data = parse_special_service_message(text, user_id)
+    if special_service_data:
+        return special_service_data
+    
+    # Если это не специальный случай, используем обычный парсинг через Groq
     parsed_data = await process_text_with_groq(text, "parse_service")
     
     if "error" in parsed_data:
@@ -971,6 +976,55 @@ async def smart_parse_service_message(text: str, user_id: int) -> dict:
         parsed_data["suggestions"] = validation.get("suggestions", [])
     
     return parsed_data
+
+def parse_special_service_message(text: str, user_id: int) -> dict:
+    """Парсит специальные типы сервисов (хостинг, домены и т.д.)"""
+    
+    # Специальная обработка для хостинга с указанием года
+    hosting_pattern = r'хостинг\s*\n*\s*([\d\s,]+)\s*₽\s*год'
+    hosting_match = re.search(hosting_pattern, text, re.IGNORECASE)
+    
+    if hosting_match:
+        try:
+            # Извлекаем стоимость хостинга
+            cost_str = hosting_match.group(1).replace(' ', '').replace(',', '.')
+            cost = float(cost_str)
+            
+            # Ищем количество дней
+            days_pattern = r'на\s+(\d+)\s+дн[ея]'
+            days_match = re.search(days_pattern, text)
+            
+            if days_match:
+                days = int(days_match.group(1))
+                # Рассчитываем дату окончания от текущей даты
+                current_date = get_current_datetime()
+                end_date = current_date + timedelta(days=days)
+                expires_at = end_date.strftime("%Y-%m-%d")
+            else:
+                # Если дни не указаны, используем год от текущей даты
+                current_date = get_current_datetime()
+                end_date = current_date + timedelta(days=365)
+                expires_at = end_date.strftime("%Y-%m-%d")
+            
+            # Ищем название проекта в первой строке
+            lines = text.strip().split('\n')
+            project = lines[0].strip() if lines else None
+            
+            return {
+                "name": "Хостинг",
+                "expires_at": expires_at,
+                "user_id": user_id,
+                "description": text,
+                "cost": cost,
+                "project": project,
+                "provider": "Хостинг-провайдер",
+                "parsing_method": "special_hosting"
+            }
+        except (ValueError, TypeError) as e:
+            print(f"Ошибка при парсинге хостинга: {e}")
+    
+    # Если не хостинг, возвращаем None для передачи в Groq
+    return None
 
 def parse_money_and_days_message(text: str) -> dict:
     """Парсит сообщения о деньгах и количестве дней, автоматически рассчитывает дату окончания"""
@@ -1077,49 +1131,6 @@ def parse_money_and_days_message(text: str) -> dict:
 # Функция для простого парсинга (fallback)
 def simple_parse_service_message(text: str, user_id: int) -> dict:
     """Простой парсинг сообщения о сервисе (fallback)"""
-    
-    # Специальная обработка для хостинга с указанием года
-    hosting_pattern = r'хостинг\s*\n*\s*([\d\s,]+)\s*₽\s*год'
-    hosting_match = re.search(hosting_pattern, text, re.IGNORECASE)
-    
-    if hosting_match:
-        try:
-            # Извлекаем стоимость хостинга
-            cost_str = hosting_match.group(1).replace(' ', '').replace(',', '.')
-            cost = float(cost_str)
-            
-            # Ищем количество дней
-            days_pattern = r'на\s+(\d+)\s+дн[ея]'
-            days_match = re.search(days_pattern, text)
-            
-            if days_match:
-                days = int(days_match.group(1))
-                # Рассчитываем дату окончания от текущей даты
-                current_date = get_current_datetime()
-                end_date = current_date + timedelta(days=days)
-                expires_at = end_date.strftime("%Y-%m-%d")
-            else:
-                # Если дни не указаны, используем год от текущей даты
-                current_date = get_current_datetime()
-                end_date = current_date + timedelta(days=365)
-                expires_at = end_date.strftime("%Y-%m-%d")
-            
-            # Ищем название проекта в первой строке
-            lines = text.strip().split('\n')
-            project = lines[0].strip() if lines else None
-            
-            return {
-                "name": "Хостинг",
-                "expires_at": expires_at,
-                "user_id": user_id,
-                "description": text,
-                "cost": cost,
-                "project": project,
-                "provider": "Хостинг-провайдер",
-                "parsing_method": "simple_hosting"
-            }
-        except (ValueError, TypeError) as e:
-            print(f"Ошибка при парсинге хостинга: {e}")
     
     # Ищем дату в тексте
     date_patterns = [
