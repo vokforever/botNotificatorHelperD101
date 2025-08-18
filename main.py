@@ -2970,6 +2970,7 @@ async def help_command(update: Update, context: CallbackContext):
 • `/test_groq` - Тестировать Groq API
 • `/test_logging` - Тестировать логирование бота
 • `/test_renewals` - Тестировать систему продлений и интеграцию с Supabase (домены, подписки, сервисы)
+• `/add_vladograd` - Добавить домены ВЛАДОГРАДА в базу данных с проверкой существования
 • `/update_cost <ID> <стоимость>` - Обновить стоимость сервиса (только для админа)
 • `/edit_cost <ID> <описание>` - Умно изменить стоимость через ИИ (только для админа)
 • `/cleanup` - Очистить временное хранилище (для отладки)
@@ -2996,6 +2997,7 @@ async def help_command(update: Update, context: CallbackContext):
 Отправьте сообщение с множественными доменами и датами:
 • "ДОМЕН\nпрогрэсс.рф\nпрогрэс.рф\nпро-гресс.рф\nжкпрогресс.рф\nprogres82.ru\n\nИСТЕКАЕТ\n30.03.2025\n30.03.2025\n30.03.2025\n30.03.2025\n27.04.2025\n\nпроект ВЛАДОГРАД"
 • Или просто список доменов и дат без заголовков
+• **Для ВЛАДОГРАДА:** используйте команду `/add_vladograd` для автоматического добавления всех доменов проекта
 
 **1.3. 🔄 Команды продления:**
 Отправьте команду продления для доменов и сервисов:
@@ -3856,6 +3858,7 @@ async def main():
     application.add_handler(CommandHandler("renewals", renewals_history_command)) # Добавляем команду для просмотра истории продлений
     application.add_handler(CommandHandler("cleanup_renewals", cleanup_renewals_command)) # Добавляем команду для очистки старых записей о продлениях
     application.add_handler(CommandHandler("test_renewals", test_renewals_command)) # Добавляем команду для тестирования системы продлений
+    application.add_handler(CommandHandler("add_vladograd", add_vladograd_domains_smart)) # Добавляем команду для добавления доменов ВЛАДОГРАДА
     application.add_handler(CallbackQueryHandler(handle_all_callbacks)) # Унифицированный обработчик всех callback запросов
     
     print("Бот запущен с планировщиком уведомлений")
@@ -5046,6 +5049,224 @@ async def handle_extension_confirmation(update: Update, context: CallbackContext
         await query.edit_message_text(
             f"❌ Ошибка при обработке подтверждения продления: {str(e)}"
         )
+
+# Функция для умного добавления доменов ВЛАДОГРАДА в базу данных
+async def add_vladograd_domains_smart(update: Update, context: CallbackContext):
+    """Умно добавляет домены ВЛАДОГРАДА с проверкой существования и поиском по датам"""
+    
+    try:
+        # Данные доменов ВЛАДОГРАДА
+        vladograd_domains = [
+            {
+                "name": "миндаль.рус",
+                "created_date": "2023-05-03",
+                "person": "-",
+                "registrar": "Regru",
+                "renewal": "Авто",
+                "expires_at": "2026-05-03",
+                "project": "ВЛАДОГРАД"
+            },
+            {
+                "name": "кварталминдаль.рф",
+                "created_date": "2023-05-03",
+                "person": "Администратор",
+                "registrar": "Спринтнеймс",
+                "renewal": "Спринтнеймс",
+                "expires_at": "2026-05-03",
+                "project": "ВЛАДОГРАД"
+            },
+            {
+                "name": "квартал-миндаль.рф",
+                "created_date": "2023-05-03",
+                "person": "Администратор",
+                "registrar": "Спринтнеймс",
+                "renewal": "Спринтнеймс",
+                "expires_at": "2026-05-03",
+                "project": "ВЛАДОГРАД"
+            },
+            {
+                "name": "жк-миндаль.рф",
+                "created_date": "2023-05-03",
+                "person": "Администратор",
+                "registrar": "Спринтнеймс",
+                "renewal": "Спринтнеймс",
+                "expires_at": "2026-05-03",
+                "project": "ВЛАДОГРАД"
+            },
+            {
+                "name": "kvartal-mindal.ru",
+                "created_date": "2023-05-03",
+                "person": "Администратор",
+                "registrar": "Спринтнеймс",
+                "renewal": "Спринтнеймс",
+                "expires_at": "2026-05-03",
+                "project": "ВЛАДОГРАД"
+            }
+        ]
+        
+        # Проверяем подключение к Supabase
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            await update.message.reply_text(
+                "❌ **Ошибка:** Supabase не настроен\n\n"
+                "Проверьте настройки SUPABASE_URL и SUPABASE_KEY в файле .env"
+            )
+            return
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Счетчики для статистики
+        added_count = 0
+        already_exists_count = 0
+        updated_count = 0
+        errors_count = 0
+        
+        # Сначала проверяем, есть ли уже домены ВЛАДОГРАДА в базе
+        await update.message.reply_text("🔍 **Поиск существующих доменов ВЛАДОГРАДА в базе...**")
+        
+        # Ищем по проекту ВЛАДОГРАД
+        existing_vladograd = supabase.table("digital_notificator_services").select("*").eq("project", "ВЛАДОГРАД").execute()
+        
+        existing_domains = []
+        if existing_vladograd.data:
+            existing_domains = [service["name"] for service in existing_vladograd.data]
+            await update.message.reply_text(
+                f"📋 **Найдено существующих доменов ВЛАДОГРАДА:** {len(existing_domains)}\n"
+                f"🌐 {', '.join(existing_domains)}"
+            )
+        
+        # Ищем домены по дате истечения 2026-05-03
+        await update.message.reply_text("🔍 **Поиск доменов с датой истечения 03.05.2026...**")
+        
+        expires_2026_05_03 = supabase.table("digital_notificator_services").select("*").eq("expires_at", "2026-05-03").execute()
+        
+        domains_expiring_2026_05_03 = []
+        if expires_2026_05_03.data:
+            domains_expiring_2026_05_03 = [service["name"] for service in expires_2026_05_03.data]
+            await_message = f"📅 **Найдено доменов с датой истечения 03.05.2026:** {len(domains_expiring_2026_05_03)}\n"
+            await_message += f"🌐 {', '.join(domains_expiring_2026_05_03)}"
+            
+            # Проверяем, есть ли среди них домены ВЛАДОГРАДА
+            vladograd_in_expiring = [d for d in domains_expiring_2026_05_03 if any(vd["name"] in d for vd in vladograd_domains)]
+            if vladograd_in_expiring:
+                await_message += f"\n\n🏢 **Среди них домены ВЛАДОГРАДА:** {', '.join(vladograd_in_expiring)}"
+            
+            await update.message.reply_text(await_message)
+        
+        # Теперь обрабатываем каждый домен ВЛАДОГРАДА
+        await update.message.reply_text("🔄 **Обработка доменов ВЛАДОГРАДА...**")
+        
+        for domain_data in vladograd_domains:
+            try:
+                domain_name = domain_data["name"]
+                
+                # Проверяем, существует ли уже такой домен
+                existing = supabase.table("digital_notificator_services").select("*").eq("name", domain_name).execute()
+                
+                if existing.data:
+                    existing_service = existing.data[0]
+                    already_exists_count += 1
+                    
+                    # Проверяем, нужно ли обновить информацию
+                    needs_update = False
+                    update_fields = {}
+                    
+                    if existing_service.get("project") != "ВЛАДОГРАД":
+                        needs_update = True
+                        update_fields["project"] = "ВЛАДОГРАД"
+                    
+                    if existing_service.get("provider") != domain_data["registrar"]:
+                        needs_update = True
+                        update_fields["provider"] = domain_data["registrar"]
+                    
+                    if existing_service.get("expires_at") != domain_data["expires_at"]:
+                        needs_update = True
+                        update_fields["expires_at"] = domain_data["expires_at"]
+                    
+                    if needs_update:
+                        # Обновляем информацию
+                        supabase.table("digital_notificator_services").update(update_fields).eq("id", existing_service["id"]).execute()
+                        updated_count += 1
+                        print(f"🔄 Обновлен домен {domain_name} для ВЛАДОГРАДА")
+                    else:
+                        print(f"✅ Домен {domain_name} уже существует и актуален")
+                    
+                    continue
+                
+                # Домен не существует, добавляем новый
+                insert_data = {
+                    "name": domain_name,
+                    "expires_at": domain_data["expires_at"],
+                    "user_id": update.effective_user.id,
+                    "status": "active",
+                    "description": f"Домен ВЛАДОГРАДА: {domain_name}",
+                    "cost": None,
+                    "project": domain_data["project"],
+                    "provider": domain_data["registrar"],
+                    "parsing_method": "manual_vladograd",
+                    "created_at": get_current_datetime_iso(),
+                    "additional_info": {
+                        "created_date": domain_data["created_date"],
+                        "person": domain_data["person"],
+                        "registrar": domain_data["registrar"],
+                        "renewal": domain_data["renewal"]
+                    }
+                }
+                
+                # Вставляем в базу данных
+                response = supabase.table("digital_notificator_services").insert(insert_data).execute()
+                
+                if response.data:
+                    added_count += 1
+                    print(f"✅ Добавлен новый домен {domain_name} для ВЛАДОГРАДА")
+                else:
+                    errors_count += 1
+                    print(f"❌ Ошибка при добавлении домена {domain_name}")
+                    
+            except Exception as e:
+                errors_count += 1
+                print(f"❌ Ошибка при обработке домена {domain_data['name']}: {e}")
+        
+        # Формируем итоговый отчет
+        report = f"🏢 **Обработка доменов ВЛАДОГРАДА завершена!**\n\n"
+        
+        if added_count > 0:
+            report += f"✅ **Новых доменов добавлено:** {added_count}\n"
+        
+        if updated_count > 0:
+            report += f"🔄 **Доменов обновлено:** {updated_count}\n"
+        
+        if already_exists_count > 0:
+            report += f"📋 **Уже существует:** {already_exists_count} доменов\n"
+        
+        if errors_count > 0:
+            report += f"❌ **Ошибки:** {errors_count} доменов\n"
+        
+        report += f"\n🌐 **Всего обработано:** {len(vladograd_domains)} доменов\n"
+        report += f"📅 **Дата истечения:** 03.05.2026\n"
+        report += f"🏗️ **Проект:** ВЛАДОГРАД\n\n"
+        
+        if existing_domains:
+            report += f"📋 **Существующие домены ВЛАДОГРАДА:**\n{', '.join(existing_domains)}\n\n"
+        
+        if domains_expiring_2026_05_03:
+            report += f"📅 **Все домены с датой 03.05.2026:**\n{', '.join(domains_expiring_2026_05_03)}\n\n"
+        
+        if added_count > 0 or updated_count > 0:
+            report += "Все домены будут отслеживаться автоматически!"
+        
+        await update.message.reply_text(report, parse_mode='Markdown')
+        
+        # Логируем результат
+        print(f"📊 Результат обработки доменов ВЛАДОГРАДА:")
+        print(f"   Добавлено новых: {added_count}")
+        print(f"   Обновлено: {updated_count}")
+        print(f"   Уже существует: {already_exists_count}")
+        print(f"   Ошибки: {errors_count}")
+        
+    except Exception as e:
+        error_message = f"❌ **Критическая ошибка** при обработке доменов ВЛАДОГРАДА:\n\n{str(e)}"
+        await update.message.reply_text(error_message, parse_mode='Markdown')
+        print(f"❌ Критическая ошибка в add_vladograd_domains_smart: {e}")
 
 if __name__ == "__main__":
     if check_single_instance():
