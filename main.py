@@ -1992,8 +1992,10 @@ def parse_multi_domain_message(text: str) -> dict:
         # Обрабатываем табличный формат
         print(f"🔍 DEBUG: Обнаружен табличный формат на строке {header_line_index}")
         
-        # Парсим заголовки
+        # Парсим заголовки (пробуем табуляцию, потом множественные пробелы)
         headers = [h.strip().lower() for h in lines[header_line_index].split('\t')]
+        if len(headers) < 3:  # Если табуляция не дала достаточно колонок
+            headers = [h.strip().lower() for h in re.split(r'\s{2,}', lines[header_line_index])]
         print(f"🔍 DEBUG: Заголовки таблицы: {headers}")
         
         # Находим индексы нужных колонок
@@ -2017,10 +2019,14 @@ def parse_multi_domain_message(text: str) -> dict:
             if not line or line.count('\t') < max(domain_col, created_col, expires_col):
                 continue
             
-            # Разбиваем строку по табуляции
+            # Разбиваем строку по табуляции или множественным пробелам
+            # Сначала пробуем табуляцию, потом множественные пробелы
             columns = line.split('\t')
             if len(columns) <= max(domain_col, created_col, expires_col):
-                continue
+                # Пробуем разбить по множественным пробелам
+                columns = re.split(r'\s{2,}', line)
+                if len(columns) <= max(domain_col, created_col, expires_col):
+                    continue
             
             # Извлекаем домен
             if domain_col >= 0 and domain_col < len(columns):
