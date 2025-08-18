@@ -683,7 +683,9 @@ async def handle_natural_language(update: Update, context: CallbackContext):
                 "Обрабатываю через специальный парсер для множественных доменов...",
                 parse_mode='Markdown'
             )
-            return
+            # Устанавливаем флаг в контексте для обработки через multi-domain parser
+            context.user_data['force_multi_domain'] = True
+            # НЕ возвращаемся здесь, продолжаем обработку через fallback multi-domain parser
         
         # Отправляем запрос к Groq с Function Calling
         response = await groq_function_calling(text, user_id)
@@ -2480,12 +2482,18 @@ async def handle_text_message(update: Update, context: CallbackContext):
     
     try:
         # Сначала пробуем обработать через естественный язык с Function Calling
-        try:
-            await handle_natural_language(update, context)
-            return
-        except Exception as nl_error:
-            print(f"🔍 DEBUG: Natural language handler failed: {nl_error}")
-            # Если не получилось, используем старый метод
+        # Но если это мульти-доменное сообщение, пропускаем Function Calling
+        if not context.user_data.get('force_multi_domain'):
+            try:
+                await handle_natural_language(update, context)
+                return
+            except Exception as nl_error:
+                print(f"🔍 DEBUG: Natural language handler failed: {nl_error}")
+                # Если не получилось, используем старый метод
+        else:
+            print(f"🔍 DEBUG: Пропускаем Function Calling для мульти-доменного сообщения")
+            # Очищаем флаг
+            context.user_data.pop('force_multi_domain', None)
         
         # Проверяем, есть ли выбранный проект в контексте пользователя
         selected_project = context.user_data.get('selected_project') if context.user_data else None
