@@ -242,7 +242,7 @@ async def handle_screenshot(update: Update, context: CallbackContext):
     
     try:
         # Показываем индикатор "печатает..."
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
         
         # Скачиваем фото
         photo_file = await update.message.photo[-1].get_file()
@@ -260,7 +260,7 @@ async def handle_screenshot(update: Update, context: CallbackContext):
             return
         
         # Умно парсим распознанный текст
-        user_id = update.from_user.id
+        user_id = update.message.from_user.id
         parsed_data = await smart_parse_service_message(recognized_text, user_id)
         
         if "error" in parsed_data:
@@ -326,10 +326,12 @@ async def handle_button(update: Update, context: CallbackContext):
     elif query.data.startswith("save_data:"):
         data = query.data.split(":", 1)[1]
         # Сохранение в Supabase с статусом "active"
+        # В новых версиях python-telegram-bot user_id доступен через context
+        user_id = context.user_data.get('user_id', 0) if context.user_data else 0
         supabase.table("digital_notificator_services").insert({
             "name": data,
             "expires_at": "2025-12-31", # Здесь нужно распарсить дату из текста
-            "user_id": query.from_user.id,
+            "user_id": user_id,
             "status": "active"  # Добавляем статус для отслеживания
         }).execute()
         
@@ -509,14 +511,14 @@ async def handle_text_message(update: Update, context: CallbackContext):
     """Обрабатывает текстовые сообщения для умного парсинга сервисов"""
     
     text = update.message.text.strip()
-    user_id = update.from_user.id
+    user_id = update.message.from_user.id
     
     # Игнорируем команды
     if text.startswith('/'):
         return
     
     # Показываем индикатор "печатает..."
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
     
     try:
         # Умно парсим сообщение
@@ -756,7 +758,7 @@ async def start_command(update: Update, context: CallbackContext):
     welcome_text = f"""
 🎉 **Добро пожаловать в Bot Notificator Helper!**
 
-👋 Привет, {update.from_user.first_name}!
+👋 Привет, {update.message.from_user.first_name}!
 
 🤖 Я - умный помощник для отслеживания сервисов и подписок.
 
