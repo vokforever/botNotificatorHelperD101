@@ -2750,7 +2750,25 @@ async def handle_parsed_data_save(update: Update, context: CallbackContext):
                     # Получаем соответствующую дату
                     expires_at = dates[i] if i < len(dates) else dates[-1] if dates else None
                     
-                    if not expires_at:
+                    if expires_at:
+                        # Конвертируем дату из формата DD.MM.YYYY в YYYY-MM-DD для базы данных
+                        try:
+                            # Парсим дату в формате DD.MM.YYYY или DD/MM/YYYY
+                            if re.match(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', expires_at):
+                                # Разбиваем дату по разделителю
+                                parts = re.split(r'[./-]', expires_at)
+                                if len(parts) == 3:
+                                    day, month, year = parts
+                                    # Добавляем 20 к году, если он двузначный
+                                    if len(year) == 2:
+                                        year = '20' + year
+                                    # Форматируем для базы данных
+                                    expires_at = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                        except Exception as e:
+                            print(f"⚠️ DEBUG: Ошибка при конвертации даты {expires_at}: {e}")
+                            # Если не удалось конвертировать, используем дату по умолчанию
+                            expires_at = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                    else:
                         # Если дата не указана, используем дату по умолчанию
                         expires_at = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
                     
