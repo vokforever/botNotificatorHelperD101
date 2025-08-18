@@ -42,10 +42,8 @@ TODO ЛИСТ - Задачи для развития бота
 
 💡 ИДЕИ ДЛЯ РАЗВИТИЯ:
 - ДОбавить чтение почт, на которые приходят сообщения о прекращении работы сервисов и оплаты.
-- Добавить аналитику расходов по проектам
 - Интеграция с календарем для планирования платежей
 - Экспорт данных в различные форматы
-- Мобильное приложение для уведомлений
 
 📁 ПОДРОБНЫЙ TODO: см. файл TODO.md
 """
@@ -200,6 +198,174 @@ async def send_bot_start_notification():
         
         print("Уведомление о запуске бота отправлено")
         
+        # После отправки уведомления о запуске проверяем проекты, которые скоро закончатся
+        await check_expiring_projects_on_startup()
+        
+    except Exception as e:
+        print(f"Ошибка при отправке уведомления о запуске: {e}")
+
+# Функция для проверки проектов, которые скоро закончатся или уже закончились на старте бота
+async def check_expiring_projects_on_startup():
+    """Проверяет проекты на старте бота и отправляет уведомления о тех, что скоро закончатся"""
+    
+    if ADMIN_ID == 0:
+        print("ADMIN_ID не установлен в переменных окружения")
+        return
+    
+    try:
+        # Получаем все активные сервисы
+        response = supabase.table("digital_notificator_services").select("*").eq("status", "active").execute()
+        
+        if not response.data:
+            print("Нет активных сервисов для проверки")
+            return
+        
+        today = get_current_date()
+        expiring_services = []
+        expired_services = []
+        
+        for service in response.data:
+            try:
+                # Обрабатываем даты с временными зонами
+                expires_at_str = service['expires_at']
+                if 'T' in expires_at_str:
+                    # Если дата содержит время, берем только дату
+                    expires_at_str = expires_at_str.split('T')[0]
+                
+                expires_at = datetime.strptime(expires_at_str, "%Y-%m-%d").date()
+                days_until_expiry = (expires_at - today).days
+                
+                # Проверяем сервисы, которые скоро закончатся (в течение 30 дней) или уже закончились
+                if days_until_expiry <= 30:
+                    if days_until_expiry < 0:
+                        expired_services.append((service, days_until_expiry))
+                    else:
+                        expiring_services.append((service, days_until_expiry))
+                        
+            except (ValueError, TypeError) as e:
+                print(f"Ошибка при парсинге даты для сервиса {service.get('name', 'Неизвестно')}: {e}")
+                continue
+        
+        # Если есть сервисы, которые скоро закончатся или уже закончились, отправляем уведомление
+        if expiring_services or expired_services:
+            await send_startup_expiry_notification(expiring_services, expired_services)
+        else:
+            print("Нет сервисов, которые скоро закончатся")
+            
+    except Exception as e:
+        print(f"Ошибка при проверке проектов на старте: {e}")
+
+# Функция для отправки уведомления о сервисах, которые скоро закончатся на старте бота
+async def send_startup_expiry_notification(expiring_services, expired_services):
+    """Отправляет уведомление о сервисах, которые скоро закончатся или уже закончились"""
+    
+    try:
+        # Формируем сообщение
+        message = "🚨 **ПРОВЕРКА ПРИ ЗАПУСКЕ БОТА**\n\n"
+        
+        if expired_services:
+            message += "❌ **СЕРВИСЫ, КОТОРЫЕ УЖЕ ЗАКОНЧИЛИСЬ:**\n"
+            for service, days in expired_services[:5]:  # Показываем первые 5
+                days_abs = abs(days)
+                message += f"• {service.get('name', 'Неизвестно')} - истек {days_abs} дн. назад\n"
+            if len(expired_services) > 5:
+                message += f"... и еще {len(expired_services) - 5}\n"
+            message += "\n"
+        
+        if expiring_services:
+            message += "⚠️ **СЕРВИСЫ, КОТОРЫЕ СКОРО ЗАКОНЧАТСЯ:**\n"
+            for service, days in expiring_services[:5]:  # Показываем первые 5
+                message += f"• {service.get('name', 'Неизвестно')} - истекает через {days} дн.\n"
+            if len(expiring_services) > 5:
+                message += f"... и еще {len(expiring_services) - 5}\n"
+            message += "\n"
+        
+        message += "🔧 **Действия:**\n"
+        message += "• Нажмите '💰 Оплатили' если сервис уже оплачен\n"
+        message += "• Нажмите '📅 Продли на год' для автоматического продления\n"
+        message += "• Хостинг и домены будут автоматически продлены на год\n"
+        
+        # Создаем кнопки для каждого сервиса
+        keyboard = []
+        
+        # Добавляем кнопки для истекших сервисов
+        for service, days in expired_services[:3]:  # Максимум 3 кнопки в ряду
+            row = []
+            row.append(InlineKeyboardButton(
+                f"💰 {service.get('name', 'Неизвестно')[:15]}...", 
+                callback_data=f"paid_startup:{service['id']}"
+            ))
+            
+            # Определяем, является ли это хостингом или доменом
+            is_hosting_or_domain = (
+                (service.get('provider') and service.get('provider').lower() in ['хостинг-провайдер', 'доменный регистратор', 'хостинг']) or
+                'хостинг' in service.get('name', '').lower() or
+                'домен' in service.get('name', '').lower() or
+                '.' in service.get('name', '')  # Домены содержат точку
+            )
+            
+            if is_hosting_or_domain:
+                row.append(InlineKeyboardButton(
+                    "📅 Продли на год", 
+                    callback_data=f"extend_startup:{service['id']}:hosting"
+                ))
+            else:
+                row.append(InlineKeyboardButton(
+                    "📅 Продли на год", 
+                    callback_data=f"extend_startup:{service['id']}:service"
+                ))
+            
+            keyboard.append(row)
+        
+        # Добавляем кнопки для сервисов, которые скоро закончатся
+        for service, days in expiring_services[:3]:  # Максимум 3 кнопки в ряду
+            row = []
+            row.append(InlineKeyboardButton(
+                f"💰 {service.get('name', 'Неизвестно')[:15]}...", 
+                callback_data=f"paid_startup:{service['id']}"
+            ))
+            
+            # Определяем, является ли это хостингом или доменом
+            is_hosting_or_domain = (
+                (service.get('provider') and service.get('provider').lower() in ['хостинг-провайдер', 'доменный регистратор', 'хостинг']) or
+                'хостинг' in service.get('name', '').lower() or
+                'домен' in service.get('name', '').lower() or
+                '.' in service.get('name', '')  # Домены содержат точку
+            )
+            
+            if is_hosting_or_domain:
+                row.append(InlineKeyboardButton(
+                    "📅 Продли на год", 
+                    callback_data=f"extend_startup:{service['id']}:hosting"
+                ))
+            else:
+                row.append(InlineKeyboardButton(
+                    "📅 Продли на год", 
+                    callback_data=f"extend_startup:{service['id']}:service"
+                ))
+            
+            keyboard.append(row)
+        
+        # Добавляем общую кнопку для всех сервисов
+        if len(expired_services) + len(expiring_services) > 3:
+            keyboard.append([
+                InlineKeyboardButton("💰 Все оплачены", callback_data="all_paid_startup"),
+                InlineKeyboardButton("📅 Продлить все хостинги", callback_data="extend_all_hosting_startup")
+            ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # Отправляем сообщение админу
+        bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        await bot.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=message,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+        
+        print(f"Уведомление о запуске отправлено: {len(expired_services)} истекших, {len(expiring_services)} скоро истекающих сервисов")
+        
     except Exception as e:
         print(f"Ошибка при отправке уведомления о запуске: {e}")
 
@@ -284,7 +450,13 @@ async def check_and_send_notifications():
         notifications_sent = 0
         
         for service in response.data:
-            expires_at = datetime.strptime(service['expires_at'], "%Y-%m-%d").date()
+            # Обрабатываем даты с временными зонами
+            expires_at_str = service['expires_at']
+            if 'T' in expires_at_str:
+                # Если дата содержит время, берем только дату
+                expires_at_str = expires_at_str.split('T')[0]
+            
+            expires_at = datetime.strptime(expires_at_str, "%Y-%m-%d").date()
             days_until_expiry = (expires_at - today).days
             
             # Проверяем, нужно ли отправить уведомление
@@ -414,6 +586,191 @@ async def handle_notification_buttons(update: Update, context: CallbackContext):
                 f"Сервис больше не будет появляться в уведомлениях.",
                 parse_mode='Markdown'
             )
+            
+        elif query.data.startswith("paid_startup:"):
+            # Пользователь нажал "Оплатили" на старте бота
+            _, service_id = query.data.split(":")
+            
+            # Получаем информацию о сервисе
+            service_response = supabase.table("digital_notificator_services").select("*").eq("id", service_id).execute()
+            if service_response.data:
+                service = service_response.data[0]
+                service_name = service.get('name', 'Неизвестно')
+                
+                # Обновляем статус сервиса на "оплачен"
+                supabase.table("digital_notificator_services").update({
+                    "status": "paid",
+                    "payment_date": get_current_datetime_iso()
+                }).eq("id", service_id).execute()
+                
+                await query.edit_message_text(
+                    f"💰 **Статус обновлен: 'Оплатили'**\n\n"
+                    f"📋 **Сервис:** {service_name}\n"
+                    f"✅ **Действие:** Отмечен как оплаченный\n\n"
+                    f"Сервис больше не будет появляться в уведомлениях.",
+                    parse_mode='Markdown'
+                )
+            else:
+                await query.edit_message_text("❌ Сервис не найден в базе данных.")
+                
+        elif query.data.startswith("extend_startup:"):
+            # Пользователь нажал "Продли на год" на старте бота
+            _, service_id, service_type = query.data.split(":")
+            
+            try:
+                # Получаем информацию о сервисе
+                service_response = supabase.table("digital_notificator_services").select("*").eq("id", service_id).execute()
+                if not service_response.data:
+                    await query.edit_message_text("❌ Сервис не найден в базе данных.")
+                    return
+                
+                service = service_response.data[0]
+                service_name = service.get('name', 'Неизвестно')
+                current_expires_at = service.get('expires_at')
+                
+                # Рассчитываем новую дату окончания (текущая дата + 1 год)
+                new_expires_at = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                
+                # Обновляем дату окончания в базе
+                supabase.table("digital_notificator_services").update({
+                    "expires_at": new_expires_at,
+                    "status": "active",  # Возвращаем в активные
+                    "last_notification": None,  # Сбрасываем уведомления
+                    "notification_date": None
+                }).eq("id", service_id).execute()
+                
+                # Формируем сообщение об успешном продлении
+                if service_type == "hosting":
+                    message = f"📅 **Хостинг/домен продлен на год!**\n\n"
+                    message += f"📋 **Сервис:** {service_name}\n"
+                    message += f"📅 **Старая дата:** {current_expires_at}\n"
+                    message += f"📅 **Новая дата:** {new_expires_at}\n"
+                    message += f"✅ **Статус:** Возвращен в активные\n\n"
+                    message += f"Хостинг/домен будет отслеживаться автоматически!"
+                else:
+                    message = f"📅 **Сервис продлен на год!**\n\n"
+                    message += f"📋 **Сервис:** {service_name}\n"
+                    message += f"📅 **Старая дата:** {current_expires_at}\n"
+                    message += f"📅 **Новая дата:** {new_expires_at}\n"
+                    message += f"✅ **Статус:** Возвращен в активные\n\n"
+                    message += f"Сервис будет отслеживаться автоматически!"
+                
+                await query.edit_message_text(message, parse_mode='Markdown')
+                
+            except Exception as e:
+                await query.edit_message_text(f"❌ Ошибка при продлении сервиса: {str(e)}")
+                
+        elif query.data == "all_paid_startup":
+            # Пользователь нажал "Все оплачены" на старте бота
+            try:
+                # Получаем все сервисы, которые скоро закончатся или уже закончились
+                response = supabase.table("digital_notificator_services").select("*").eq("status", "active").execute()
+                
+                if not response.data:
+                    await query.edit_message_text("❌ Нет активных сервисов для обновления.")
+                    return
+                
+                today = get_current_date()
+                services_to_update = []
+                
+                for service in response.data:
+                    try:
+                        # Обрабатываем даты с временными зонами
+                        expires_at_str = service['expires_at']
+                        if 'T' in expires_at_str:
+                            # Если дата содержит время, берем только дату
+                            expires_at_str = expires_at_str.split('T')[0]
+                        
+                        expires_at = datetime.strptime(expires_at_str, "%Y-%m-%d").date()
+                        days_until_expiry = (expires_at - today).days
+                        
+                        if days_until_expiry <= 30:  # Сервисы, которые скоро закончатся или уже закончились
+                            services_to_update.append(service['id'])
+                    except (ValueError, TypeError):
+                        continue
+                
+                if services_to_update:
+                    # Обновляем статус всех сервисов на "оплачен"
+                    supabase.table("digital_notificator_services").update({
+                        "status": "paid",
+                        "payment_date": get_current_datetime_iso()
+                    }).in_("id", services_to_update).execute()
+                    
+                    await query.edit_message_text(
+                        f"💰 **Все сервисы отмечены как оплаченные!**\n\n"
+                        f"📊 **Обновлено сервисов:** {len(services_to_update)}\n"
+                        f"✅ **Статус:** Все отмечены как оплаченные\n\n"
+                        f"Эти сервисы больше не будут появляться в уведомлениях.",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await query.edit_message_text("❌ Нет сервисов для обновления статуса.")
+                    
+            except Exception as e:
+                await query.edit_message_text(f"❌ Ошибка при обновлении статусов: {str(e)}")
+                
+        elif query.data == "extend_all_hosting_startup":
+            # Пользователь нажал "Продлить все хостинги" на старте бота
+            try:
+                # Получаем все активные сервисы
+                response = supabase.table("digital_notificator_services").select("*").eq("status", "active").execute()
+                
+                if not response.data:
+                    await query.edit_message_text("❌ Нет активных сервисов для продления.")
+                    return
+                
+                today = get_current_date()
+                hosting_services = []
+                
+                for service in response.data:
+                    try:
+                        # Обрабатываем даты с временными зонами
+                        expires_at_str = service['expires_at']
+                        if 'T' in expires_at_str:
+                            # Если дата содержит время, берем только дату
+                            expires_at_str = expires_at_str.split('T')[0]
+                        
+                        expires_at = datetime.strptime(expires_at_str, "%Y-%m-%d").date()
+                        days_until_expiry = (expires_at - today).days
+                        
+                        # Проверяем, является ли это хостингом или доменом
+                        is_hosting_or_domain = (
+                            service.get('provider', '').lower() in ['хостинг-провайдер', 'доменный регистратор', 'хостинг'] or
+                            'хостинг' in service.get('name', '').lower() or
+                            'домен' in service.get('name', '').lower() or
+                            '.' in service.get('name', '')  # Домены содержат точку
+                        )
+                        
+                        if days_until_expiry <= 30 and is_hosting_or_domain:  # Только хостинги/домены, которые скоро закончатся
+                            hosting_services.append(service['id'])
+                    except (ValueError, TypeError):
+                        continue
+                
+                if hosting_services:
+                    # Рассчитываем новую дату окончания (текущая дата + 1 год)
+                    new_expires_at = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                    
+                    # Обновляем дату окончания всех хостингов
+                    supabase.table("digital_notificator_services").update({
+                        "expires_at": new_expires_at,
+                        "status": "active",  # Возвращаем в активные
+                        "last_notification": None,  # Сбрасываем уведомления
+                        "notification_date": None
+                    }).in_("id", hosting_services).execute()
+                    
+                    await query.edit_message_text(
+                        f"📅 **Все хостинги/домены продлены на год!**\n\n"
+                        f"📊 **Продлено сервисов:** {len(hosting_services)}\n"
+                        f"📅 **Новая дата окончания:** {new_expires_at}\n"
+                        f"✅ **Статус:** Все возвращены в активные\n\n"
+                        f"Хостинги/домены будут отслеживаться автоматически!",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await query.edit_message_text("❌ Нет хостингов/доменов для продления.")
+                    
+            except Exception as e:
+                await query.edit_message_text(f"❌ Ошибка при продлении хостингов: {str(e)}")
             
     except Exception as e:
         print(f"Ошибка при обработке кнопки: {e}")
@@ -1013,9 +1370,18 @@ async def smart_parse_service_message(text: str, user_id: int) -> dict:
         return money_date_data
     
     # Затем проверяем, не является ли это мульти-доменным сообщением
+    # Сначала пробуем ИИ-обработку для лучшего качества
+    multi_domain_ai_data = await process_multi_domain_with_groq(text)
+    if multi_domain_ai_data and "error" not in multi_domain_ai_data:
+        print(f"🔍 DEBUG: [smart_parse_service_message] Найден мульти-домен через ИИ, возвращаем: {multi_domain_ai_data}")
+        # Добавляем user_id к мульти-доменным данным
+        multi_domain_ai_data["user_id"] = user_id
+        return multi_domain_ai_data
+    
+    # Если ИИ не сработал, используем обычный парсер как fallback
     multi_domain_data = parse_multi_domain_message(text)
     if multi_domain_data:
-        print(f"🔍 DEBUG: [smart_parse_service_message] Найден мульти-домен, возвращаем: {multi_domain_data}")
+        print(f"🔍 DEBUG: [smart_parse_service_message] Найден мульти-домен через обычный парсер, возвращаем: {multi_domain_data}")
         # Добавляем user_id к мульти-доменным данным
         multi_domain_data["user_id"] = user_id
         return multi_domain_data
@@ -1078,6 +1444,10 @@ def parse_multi_domain_message(text: str) -> dict:
       27.04.2025
       
       проект ВЛАДОГРАД
+      
+    - Табличный формат:
+      Домен  	Создан  	Персона  	Регистратор  	Продление  	Истекает
+      миндаль.рус	03.05.2023	-	Regru	Авто	03.05.2026
     """
     
     # Паттерны для распознавания мульти-доменных сообщений
@@ -1100,105 +1470,186 @@ def parse_multi_domain_message(text: str) -> dict:
     # Разбиваем текст на строки
     lines = text.strip().split('\n')
     
-    # Ищем заголовки и соответствующие данные
-    in_domain_section = False
-    in_date_section = False
+    # Проверяем, является ли это табличным форматом
+    is_table_format = False
+    header_line_index = -1
     
+    # Ищем строку с заголовками таблицы
     for i, line in enumerate(lines):
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Проверяем заголовки
-        if line.lower() == 'домен':
-            in_domain_section = True
-            in_date_section = False
-            continue
-        elif line.lower() == 'истекает':
-            in_domain_section = False
-            in_date_section = True
-            continue
-        elif line.lower().startswith('проект'):
-            project = line.replace('проект', '').strip()
-            continue
+        line_lower = line.lower().strip()
+        if ('домен' in line_lower and 'создан' in line_lower and 'истекает' in line_lower) or \
+           ('домен' in line_lower and 'истекает' in line_lower):
+            is_table_format = True
+            header_line_index = i
+            break
+    
+    if is_table_format:
+        # Обрабатываем табличный формат
+        print(f"🔍 DEBUG: Обнаружен табличный формат на строке {header_line_index}")
         
-        # Собираем домены
-        if in_domain_section:
-            # Проверяем, что это похоже на домен
-            if '.' in line and not line.startswith('http'):
-                domains.append(line.strip())
+        # Парсим заголовки
+        headers = [h.strip().lower() for h in lines[header_line_index].split('\t')]
+        print(f"🔍 DEBUG: Заголовки таблицы: {headers}")
         
-        # Собираем даты
-        elif in_date_section:
-            # Проверяем, что это похоже на дату
-            date_patterns = [
-                r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})',  # DD/MM/YYYY или DD.MM.YYYY
-                r'(\d{4}[./-]\d{1,2}[./-]\d{1,2})',    # YYYY/MM/DD
-            ]
+        # Находим индексы нужных колонок
+        domain_col = -1
+        created_col = -1
+        expires_col = -1
+        
+        for i, header in enumerate(headers):
+            if 'домен' in header:
+                domain_col = i
+            elif 'создан' in header:
+                created_col = i
+            elif 'истекает' in header:
+                expires_col = i
+        
+        print(f"🔍 DEBUG: Индексы колонок - домен: {domain_col}, создан: {created_col}, истекает: {expires_col}")
+        
+        # Парсим строки данных
+        for i in range(header_line_index + 1, len(lines)):
+            line = lines[i].strip()
+            if not line or line.count('\t') < max(domain_col, created_col, expires_col):
+                continue
             
-            for pattern in date_patterns:
-                match = re.search(pattern, line)
-                if match:
-                    date_str = match.group(1)
+            # Разбиваем строку по табуляции
+            columns = line.split('\t')
+            if len(columns) <= max(domain_col, created_col, expires_col):
+                continue
+            
+            # Извлекаем домен
+            if domain_col >= 0 and domain_col < len(columns):
+                domain = columns[domain_col].strip()
+                if domain and '.' in domain and not domain.startswith('http'):
+                    domains.append(domain)
+                    print(f"🔍 DEBUG: Найден домен: {domain}")
+            
+            # Извлекаем дату истечения (приоритет колонке "Истекает")
+            if expires_col >= 0 and expires_col < len(columns):
+                expires_date = columns[expires_col].strip()
+                if expires_date and re.match(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', expires_date):
                     try:
-                        # Пытаемся распарсить дату
-                        if '.' in date_str or '/' in date_str:
-                            parts = re.split(r'[./]', date_str)
-                            if len(parts) == 3:
-                                if len(parts[2]) == 2:  # YY -> YYYY
-                                    parts[2] = '20' + parts[2]
-                                if len(parts[0]) == 4:  # YYYY.MM.DD
-                                    parsed_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                                else:  # DD.MM.YYYY
-                                    parsed_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                        # Парсим дату истечения
+                        parsed_date = parse_date_string(expires_date)
+                        if parsed_date:
+                            dates.append(parsed_date)
+                            print(f"🔍 DEBUG: Найдена дата истечения: {expires_date} -> {parsed_date}")
+                            continue
+                    except:
+                        pass
+            
+            # Если дата истечения не найдена, используем дату создания + 1 год
+            if created_col >= 0 and created_col < len(columns):
+                created_date = columns[created_col].strip()
+                if created_date and re.match(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', created_date):
+                    try:
+                        # Парсим дату создания и добавляем 1 год
+                        created_parsed = parse_date_string(created_date)
+                        if created_parsed:
+                            # Добавляем 1 год к дате создания
+                            created_dt = datetime.strptime(created_parsed, "%Y-%m-%d")
+                            expires_dt = created_dt + timedelta(days=365)
+                            expires_parsed = expires_dt.strftime("%Y-%m-%d")
+                            dates.append(expires_parsed)
+                            print(f"🔍 DEBUG: Используем дату создания + 1 год: {created_date} -> {expires_parsed}")
+                    except:
+                        pass
+            
+            # Если дата все еще не найдена, используем дату по умолчанию
+            if len(dates) < len(domains):
+                default_date = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                dates.append(default_date)
+                print(f"🔍 DEBUG: Используем дату по умолчанию: {default_date}")
+    
+    else:
+        # Обрабатываем обычный формат с заголовками
+        print(f"🔍 DEBUG: Обрабатываем обычный формат")
+        
+        # Ищем заголовки и соответствующие данные
+        in_domain_section = False
+        in_date_section = False
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Проверяем заголовки (учитываем регистр)
+            if line.lower() == 'домен':
+                in_domain_section = True
+                in_date_section = False
+                continue
+            elif line.lower() in ['истекает', 'истекает:']:
+                in_domain_section = False
+                in_date_section = True
+                continue
+            elif line.lower().startswith('проект'):
+                project = line.replace('проект', '').strip()
+                continue
+            
+            # Собираем домены
+            if in_domain_section:
+                # Проверяем, что это похоже на домен
+                if '.' in line and not line.startswith('http'):
+                    domains.append(line.strip())
+            
+            # Собираем даты
+            elif in_date_section:
+                # Проверяем, что это похоже на дату
+                date_patterns = [
+                    r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})',  # DD/MM/YYYY или DD.MM.YYYY
+                    r'(\d{4}[./-]\d{1,2}[./-]\d{1,2})',    # YYYY/MM/DD
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, line)
+                    if match:
+                        date_str = match.group(1)
+                        try:
+                            # Пытаемся распарсить дату
+                            parsed_date = parse_date_string(date_str)
+                            if parsed_date:
                                 dates.append(parsed_date)
                                 break
-                    except:
-                        continue
-    
-    # Если домены или даты не найдены через заголовки, ищем их в тексте
-    if not domains:
-        # Ищем строки, похожие на домены
-        for line in lines:
-            line = line.strip()
-            if '.' in line and not line.startswith('http') and not re.match(r'\d', line):
-                # Проверяем, что это не дата и не число
-                if not re.match(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', line):
-                    domains.append(line)
-    
-    if not dates:
-        # Ищем даты в тексте
-        for line in lines:
-            line = line.strip()
-            date_patterns = [
-                r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})',  # DD/MM/YYYY или DD.MM.YYYY
-                r'(\d{4}[./-]\d{1,2}[./-]\d{1,2})',    # YYYY/MM/DD
-            ]
-            
-            for pattern in date_patterns:
-                match = re.search(pattern, line)
-                if match:
-                    date_str = match.group(1)
-                    try:
-                        if '.' in date_str or '/' in date_str:
-                            parts = re.split(r'[./]', date_str)
-                            if len(parts) == 3:
-                                if len(parts[2]) == 2:  # YY -> YYYY
-                                    parts[2] = '20' + parts[2]
-                                if len(parts[0]) == 4:  # YYYY.MM.DD
-                                    parsed_date = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-                                else:  # DD.MM.YYYY
-                                    parsed_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                        except:
+                            continue
+        
+        # Если домены или даты не найдены через заголовки, ищем их в тексте
+        if not domains:
+            # Ищем строки, похожие на домены
+            for line in lines:
+                line = line.strip()
+                if '.' in line and not line.startswith('http') and not re.match(r'\d', line):
+                    # Проверяем, что это не дата и не число
+                    if not re.match(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', line):
+                        domains.append(line)
+        
+        if not dates:
+            # Ищем даты в тексте
+            for line in lines:
+                line = line.strip()
+                date_patterns = [
+                    r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})',  # DD/MM/YYYY или DD.MM.YYYY
+                    r'(\d{4}[./-]\d{1,2}[./-]\d{1,2})',    # YYYY/MM/DD
+                ]
+                
+                for pattern in date_patterns:
+                    match = re.search(pattern, line)
+                    if match:
+                        date_str = match.group(1)
+                        try:
+                            parsed_date = parse_date_string(date_str)
+                            if parsed_date:
                                 dates.append(parsed_date)
                                 break
-                    except:
-                        continue
+                        except:
+                            continue
     
     # Если проект не найден, ищем его в тексте
     if not project:
         for line in lines:
             line = line.strip()
-            if line and not line.lower() in ['домен', 'истекает'] and '.' not in line and not re.match(r'\d', line):
+            if line and not line.lower() in ['домен', 'истекает', 'создан', 'персона', 'регистратор', 'продление'] and '.' not in line and not re.match(r'\d', line):
                 if len(line) > 3:  # Исключаем короткие строки
                     project = line
                     break
@@ -1222,6 +1673,22 @@ def parse_multi_domain_message(text: str) -> dict:
             "total_dates": len(dates)
         }
     
+    return None
+
+def parse_date_string(date_str: str) -> str:
+    """Парсит строку даты в различных форматах и возвращает в формате YYYY-MM-DD"""
+    try:
+        if '.' in date_str or '/' in date_str:
+            parts = re.split(r'[./]', date_str)
+            if len(parts) == 3:
+                if len(parts[2]) == 2:  # YY -> YYYY
+                    parts[2] = '20' + parts[2]
+                if len(parts[0]) == 4:  # YYYY.MM.DD
+                    return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+                else:  # DD.MM.YYYY
+                    return f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+    except:
+        pass
     return None
 
 def parse_money_and_days_message(text: str) -> dict:
@@ -1339,6 +1806,20 @@ def simple_parse_service_message(text: str, user_id: int) -> dict:
                             expires_at = f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
                         else:  # DD.MM.YYYY
                             expires_at = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+                    else:
+                        # DD месяц YYYY
+                        month_names = {
+                            'января': '01', 'февраля': '02', 'марта': '03', 'апреля': '04',
+                            'мая': '05', 'июня': '06', 'июля': '07', 'августа': '08',
+                            'сентября': '09', 'октября': '10', 'ноября': '11', 'декабря': '12'
+                        }
+                        parts = date_str.split()
+                        if len(parts) == 3:
+                            day = parts[0].zfill(2)
+                            month = month_names.get(parts[1].lower(), '01')
+                            year = parts[2]
+                            expires_at = f"{year}-{month}-{day}"
+                    break
                 else:
                     # DD месяц YYYY
                     month_names = {
@@ -1352,7 +1833,7 @@ def simple_parse_service_message(text: str, user_id: int) -> dict:
                         month = month_names.get(parts[1].lower(), '01')
                         year = parts[2]
                         expires_at = f"{year}-{month}-{day}"
-                break
+                    break
             except:
                 continue
     
@@ -1629,7 +2110,7 @@ async def handle_parsed_data_save(update: Update, context: CallbackContext):
                 return
             
             # Проверяем, является ли это мульти-доменным сообщением
-            if parsed_data.get('parsing_method') == 'multi_domain_parser':
+            if parsed_data.get('parsing_method') in ['multi_domain_parser', 'groq_ai']:
                 # Для мульти-доменных сообщений сохраняем каждый домен отдельно
                 domains = parsed_data.get('domains', [])
                 dates = parsed_data.get('dates', [])
@@ -1937,6 +2418,7 @@ async def help_command(update: Update, context: CallbackContext):
 • `/update_cost <ID> <стоимость>` - Обновить стоимость сервиса (только для админа)
 • `/edit_cost <ID> <описание>` - Умно изменить стоимость через ИИ (только для админа)
 • `/cleanup` - Очистить временное хранилище (для отладки)
+• `/check_startup` - Проверить проекты на старте бота (только для админа)
 
 **Как использовать:**
 
@@ -2060,6 +2542,7 @@ async def start_command(update: Update, context: CallbackContext):
 • `/test_groq` - Проверить работу AI
 • `/update_cost` - Обновить стоимость сервиса (для админа)
 • `/edit_cost` - Умно изменить стоимость через ИИ (для админа)
+• `/check_startup` - Проверить проекты на старте (для админа)
 
 🚀 **Отправьте первое сообщение и попробуйте!**
 """
@@ -2670,6 +3153,7 @@ async def main():
     application.add_handler(CommandHandler("add_test_data", add_test_data_command)) # Добавляем команду для добавления тестовых данных
     application.add_handler(CommandHandler("projects", select_project_command)) # Добавляем команду для выбора проекта
     application.add_handler(CommandHandler("providers", providers_command)) # Добавляем команду для просмотра провайдеров
+    application.add_handler(CommandHandler("check_startup", check_startup_command)) # Добавляем команду для проверки проектов на старте
     application.add_handler(CallbackQueryHandler(handle_all_callbacks)) # Унифицированный обработчик всех callback запросов
     
     print("Бот запущен с планировщиком уведомлений")
@@ -2947,6 +3431,178 @@ async def stop_bot():
             
         except Exception as e:
             print(f"Ошибка при остановке бота: {e}")
+
+# Команда для принудительной проверки проектов на старте
+async def check_startup_command(update: Update, context: CallbackContext):
+    """Принудительно проверяет проекты, которые скоро закончатся или уже закончились"""
+    
+    if not ADMIN_ID or update.message.from_user.id != ADMIN_ID:
+        await update.message.reply_text("❌ У вас нет прав для выполнения этой команды.")
+        return
+    
+    await update.message.reply_text("🔍 Проверяю проекты на старте...")
+    
+    try:
+        # Вызываем функцию проверки проектов на старте
+        await check_expiring_projects_on_startup()
+        
+        await update.message.reply_text(
+            "✅ **Проверка проектов на старте завершена!**\n\n"
+            "Если есть сервисы, которые скоро закончатся или уже закончились, "
+            "вы получите уведомление с кнопками управления.",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ **Ошибка при проверке проектов:** {str(e)}",
+            parse_mode='Markdown'
+        )
+
+# Функция для умной обработки мультидоменных сообщений через Groq AI
+async def process_multi_domain_with_groq(text: str) -> dict:
+    """Обрабатывает мультидоменные сообщения через Groq AI для точного извлечения данных
+    
+    Эта функция использует ИИ для:
+    1. Распознавания структуры таблицы
+    2. Извлечения доменов и дат
+    3. Определения проекта
+    4. Обработки различных форматов данных
+    """
+    
+    if not GROQ_API_KEY:
+        return {"error": "GROQ_API_KEY не настроен"}
+    
+    # Получаем текущее время для промпта
+    current_time = get_current_datetime()
+    current_time_str = current_time.strftime("%d.%m.%Y %H:%M (МСК)")
+    
+    system_prompt = f"""Ты - эксперт по анализу данных о доменах и сервисах.
+
+**ВАЖНО: Текущее время: {current_time_str}**
+
+Твоя задача - извлечь структурированную информацию из текста о доменах.
+
+**Формат ответа (строго JSON):**
+```json
+{{
+    "type": "multi_domain",
+    "domains": ["домен1.рф", "домен2.ru"],
+    "dates": ["2026-05-03", "2026-05-03"],
+    "project": "название проекта",
+    "parsing_method": "groq_ai",
+    "total_domains": 2,
+    "total_dates": 2,
+    "table_structure": {{
+        "has_headers": true,
+        "columns": ["Домен", "Создан", "Истекает"],
+        "data_rows": 5
+    }}
+}}
+```
+
+**Правила обработки:**
+
+1. **Домены:**
+   - Ищи строки, содержащие точки (например, "миндаль.рус", "kvartal-mindal.ru")
+   - Исключай URL (не начинающиеся с http/https)
+   - Исключай даты и числа
+
+2. **Даты:**
+   - **ПРИОРИТЕТ: колонка "Истекает"** - используй её для даты окончания
+   - Если "Истекает" не указана, используй "Создан" + 1 год
+   - Формат дат: DD.MM.YYYY или DD/MM/YYYY
+   - Конвертируй в YYYY-MM-DD
+   - Если год указан как YY, добавляй 20 в начало
+
+3. **Проект:**
+   - Ищи название проекта в тексте
+   - Если не указан, попробуй определить по доменам
+
+4. **Структура таблицы:**
+   - Определи, есть ли заголовки
+   - Подсчитай количество колонок и строк данных
+
+**Примеры форматов:**
+- Табличный с заголовками: "Домен Создан Персона Регистратор Продление Истекает"
+- Простой список: "ДОМЕН\ndomen1.rf\ndomen2.ru\n\nИСТЕКАЕТ\n01.01.2026\n01.01.2026"
+
+**ВАЖНО:** Всегда используй колонку "Истекает" для дат окончания, а не "Создан"!
+
+Возвращай только валидный JSON без дополнительного текста."""
+
+    user_prompt = f"Проанализируй этот текст и извлеки информацию о доменах:\n\n{text}"
+    
+    try:
+        url = f"{GROQ_BASE_URL}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": GROQ_TEXT_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.1
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # Пытаемся распарсить JSON ответ
+            try:
+                parsed_result = json.loads(content)
+                
+                # Валидируем результат
+                if "domains" in parsed_result and "dates" in parsed_result:
+                    # Убеждаемся, что даты в правильном формате
+                    validated_dates = []
+                    for date_str in parsed_result["dates"]:
+                        if isinstance(date_str, str):
+                            # Проверяем, что дата уже в формате YYYY-MM-DD
+                            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                                validated_dates.append(date_str)
+                            else:
+                                # Пытаемся распарсить дату
+                                parsed_date = parse_date_string(date_str)
+                                if parsed_date:
+                                    validated_dates.append(parsed_date)
+                                else:
+                                    # Используем дату по умолчанию
+                                    default_date = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                                    validated_dates.append(default_date)
+                        else:
+                            # Если дата не строка, используем дату по умолчанию
+                            default_date = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                            validated_dates.append(default_date)
+                    
+                    parsed_result["dates"] = validated_dates
+                    parsed_result["total_domains"] = len(parsed_result["domains"])
+                    parsed_result["total_dates"] = len(validated_dates)
+                    
+                    print(f"🔍 DEBUG: [GROQ AI] Успешно обработано мультидоменное сообщение")
+                    print(f"🔍 DEBUG: [GROQ AI] Домены: {parsed_result['domains']}")
+                    print(f"🔍 DEBUG: [GROQ AI] Даты: {parsed_result['dates']}")
+                    
+                    return parsed_result
+                else:
+                    return {"error": "Неверный формат ответа от Groq AI"}
+                    
+            except json.JSONDecodeError as e:
+                print(f"🔍 DEBUG: [GROQ AI] Ошибка парсинга JSON: {e}")
+                return {"error": f"Ошибка парсинга ответа от Groq AI: {str(e)}", "raw_response": content}
+        else:
+            return {"error": f"Ошибка API: {response.status_code}", "details": response.text}
+            
+    except Exception as e:
+        return {"error": f"Ошибка при обработке через Groq AI: {str(e)}"}
 
 if __name__ == "__main__":
     if check_single_instance():
