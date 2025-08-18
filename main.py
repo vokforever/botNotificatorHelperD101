@@ -994,40 +994,110 @@ def parse_special_service_message(text: str, user_id: int) -> dict:
     
     print(f"🔍 DEBUG: Проверяем специальные сервисы для текста: {text[:100]}...")
     
-    # Специальная обработка для хостинга с указанием года
-    hosting_pattern = r'хостинг\s*\n*\s*([\d\s,]+)\s*₽\s*год'
-    hosting_match = re.search(hosting_pattern, text, re.IGNORECASE)
+    # Более гибкие паттерны для хостинга
+    hosting_patterns = [
+        r'хостинг\s*\n*\s*([\d\s,]+)\s*₽\s*год',  # хостинг 14736.00 ₽ год
+        r'хостинг\s*\n*\s*([\d\s,]+)\s*₽',         # хостинг 14736.00 ₽
+        r'([\d\s,]+)\s*₽\s*год\s*\n*\s*хостинг',   # 14736.00 ₽ год хостинг
+        r'хостинг\s*\n*\s*([\d\s,]+)',              # хостинг 14736.00
+    ]
     
-    print(f"🔍 DEBUG: Паттерн хостинга: {hosting_pattern}")
-    print(f"🔍 DEBUG: Результат поиска хостинга: {hosting_match}")
+    for i, pattern in enumerate(hosting_patterns):
+        print(f"🔍 DEBUG: Проверяем паттерн {i+1}: {pattern}")
+        hosting_match = re.search(pattern, text, re.IGNORECASE)
+        print(f"🔍 DEBUG: Результат поиска паттерна {i+1}: {hosting_match}")
+        
+        if hosting_match:
+            try:
+                print(f"🔍 DEBUG: Найден хостинг по паттерну {i+1}! Обрабатываем...")
+                
+                # Извлекаем стоимость хостинга
+                cost_str = hosting_match.group(1).replace(' ', '').replace(',', '.')
+                cost = float(cost_str)
+                print(f"🔍 DEBUG: Стоимость хостинга: {cost}")
+                
+                # Ищем количество дней
+                days_pattern = r'на\s+(\d+)\s+дн[ея]'
+                days_match = re.search(days_pattern, text)
+                print(f"🔍 DEBUG: Поиск дней: {days_match}")
+                
+                if days_match:
+                    days = int(days_match.group(1))
+                    print(f"🔍 DEBUG: Найдено дней: {days}")
+                    # Рассчитываем дату окончания от текущей даты
+                    current_date = get_current_datetime()
+                    end_date = current_date + timedelta(days=days)
+                    expires_at = end_date.strftime("%Y-%m-%d")
+                    print(f"🔍 DEBUG: Текущая дата: {current_date}")
+                    print(f"🔍 DEBUG: Дата окончания: {end_date}")
+                    print(f"🔍 DEBUG: Форматированная дата: {expires_at}")
+                else:
+                    print(f"🔍 DEBUG: Дни не найдены, используем год")
+                    # Если дни не указаны, используем год от текущей даты
+                    current_date = get_current_datetime()
+                    end_date = current_date + timedelta(days=365)
+                    expires_at = end_date.strftime("%Y-%m-%d")
+                
+                # Ищем название проекта в первой строке
+                lines = text.strip().split('\n')
+                project = lines[0].strip() if lines else None
+                print(f"🔍 DEBUG: Проект: {project}")
+                
+                result = {
+                    "name": "Хостинг",
+                    "expires_at": expires_at,
+                    "user_id": user_id,
+                    "description": text,
+                    "cost": cost,
+                    "project": project,
+                    "provider": "Хостинг-провайдер",
+                    "parsing_method": "special_hosting"
+                }
+                
+                print(f"🔍 DEBUG: Результат парсинга хостинга: {result}")
+                return result
+                
+            except (ValueError, TypeError) as e:
+                print(f"❌ DEBUG: Ошибка при парсинге хостинга по паттерну {i+1}: {e}")
+                continue
     
-    if hosting_match:
-        try:
-            print(f"🔍 DEBUG: Найден хостинг! Обрабатываем...")
-            
-            # Извлекаем стоимость хостинга
-            cost_str = hosting_match.group(1).replace(' ', '').replace(',', '.')
-            cost = float(cost_str)
-            print(f"🔍 DEBUG: Стоимость хостинга: {cost}")
+    print(f"🔍 DEBUG: Хостинг не найден ни по одному паттерну, возвращаем None")
+    
+    # Принудительная проверка: если в тексте есть "хостинг" и стоимость, считаем это хостингом
+    if "хостинг" in text.lower():
+        print(f"🔍 DEBUG: В тексте найдено слово 'хостинг', проверяем наличие стоимости")
+        
+        # Ищем стоимость любым способом
+        cost_patterns = [
+            r'([\d\s,]+)\s*₽',  # 14736.00 ₽
+            r'([\d\s,]+)\s*рубл',  # 14736.00 рубл
+        ]
+        
+        cost = None
+        for cost_pattern in cost_patterns:
+            cost_match = re.search(cost_pattern, text)
+            if cost_match:
+                try:
+                    cost_str = cost_match.group(1).replace(' ', '').replace(',', '.')
+                    cost = float(cost_str)
+                    print(f"🔍 DEBUG: Найдена стоимость: {cost}")
+                    break
+                except (ValueError, TypeError):
+                    continue
+        
+        if cost:
+            print(f"🔍 DEBUG: Принудительно обрабатываем как хостинг")
             
             # Ищем количество дней
             days_pattern = r'на\s+(\d+)\s+дн[ея]'
             days_match = re.search(days_pattern, text)
-            print(f"🔍 DEBUG: Поиск дней: {days_match}")
             
             if days_match:
                 days = int(days_match.group(1))
-                print(f"🔍 DEBUG: Найдено дней: {days}")
-                # Рассчитываем дату окончания от текущей даты
                 current_date = get_current_datetime()
                 end_date = current_date + timedelta(days=days)
                 expires_at = end_date.strftime("%Y-%m-%d")
-                print(f"🔍 DEBUG: Текущая дата: {current_date}")
-                print(f"🔍 DEBUG: Дата окончания: {end_date}")
-                print(f"🔍 DEBUG: Форматированная дата: {expires_at}")
             else:
-                print(f"🔍 DEBUG: Дни не найдены, используем год")
-                # Если дни не указаны, используем год от текущей даты
                 current_date = get_current_datetime()
                 end_date = current_date + timedelta(days=365)
                 expires_at = end_date.strftime("%Y-%m-%d")
@@ -1035,7 +1105,6 @@ def parse_special_service_message(text: str, user_id: int) -> dict:
             # Ищем название проекта в первой строке
             lines = text.strip().split('\n')
             project = lines[0].strip() if lines else None
-            print(f"🔍 DEBUG: Проект: {project}")
             
             result = {
                 "name": "Хостинг",
@@ -1045,16 +1114,12 @@ def parse_special_service_message(text: str, user_id: int) -> dict:
                 "cost": cost,
                 "project": project,
                 "provider": "Хостинг-провайдер",
-                "parsing_method": "special_hosting"
+                "parsing_method": "forced_hosting"
             }
             
-            print(f"🔍 DEBUG: Результат парсинга хостинга: {result}")
+            print(f"🔍 DEBUG: Результат принудительного парсинга хостинга: {result}")
             return result
-            
-        except (ValueError, TypeError) as e:
-            print(f"❌ DEBUG: Ошибка при парсинге хостинга: {e}")
     
-    print(f"🔍 DEBUG: Хостинг не найден, возвращаем None")
     # Если не хостинг, возвращаем None для передачи в Groq
     return None
 
