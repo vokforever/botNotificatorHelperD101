@@ -4290,16 +4290,11 @@ async def process_multi_domain_with_groq(text: str) -> dict:
 {{
     "type": "multi_domain",
     "domains": ["домен1.рф", "домен2.ru"],
-    "dates": ["2026-05-03", "2026-05-03"],
+    "dates": ["03.05.2026", "03.05.2026"],
     "project": "название проекта",
     "parsing_method": "groq_ai",
     "total_domains": 2,
-    "total_dates": 2,
-    "table_structure": {{
-        "has_headers": true,
-        "columns": ["Домен", "Создан", "Истекает"],
-        "data_rows": 5
-    }}
+    "total_dates": 2
 }}
 ```
 
@@ -4309,29 +4304,31 @@ async def process_multi_domain_with_groq(text: str) -> dict:
    - Ищи строки, содержащие точки (например, "миндаль.рус", "kvartal-mindal.ru")
    - Исключай URL (не начинающиеся с http/https)
    - Исключай даты и числа
+   - Сохраняй оригинальное написание доменов (включая punycode)
 
 2. **Даты:**
    - **ПРИОРИТЕТ: колонка "Истекает"** - используй её для даты окончания
    - Если "Истекает" не указана, используй "Создан" + 1 год
-   - Формат дат: DD.MM.YYYY или DD/MM/YYYY
-   - Конвертируй в YYYY-MM-DD
+   - **ВАЖНО: оставляй даты в оригинальном формате DD.MM.YYYY (например, "03.05.2026")**
+   - НЕ конвертируй в YYYY-MM-DD
    - Если год указан как YY, добавляй 20 в начало
 
 3. **Проект:**
-   - Ищи название проекта в тексте
+   - Ищи название проекта в тексте (например, "ВЛАДОГРАД")
    - Если не указан, попробуй определить по доменам
 
-4. **Структура таблицы:**
-   - Определи, есть ли заголовки
-   - Подсчитай количество колонок и строк данных
+4. **Игнорируй:**
+   - Регистратор, персона, ссылки, типы продления
+   - Все остальные поля кроме домена и даты истечения
 
 **Примеры форматов:**
 - Табличный с заголовками: "Домен Создан Персона Регистратор Продление Истекает"
-- Простой список: "ДОМЕН\ndomen1.rf\ndomen2.ru\n\nИСТЕКАЕТ\n01.01.2026\n01.01.2026"
+- Простой список: "ДОМЕН\ndomen1.rf\ndomen2.ru\n\nИСТЕКАЕТ\n03.05.2026\n03.05.2026"
 
-**ВАЖНО:** Всегда используй колонку "Истекает" для дат окончания, а не "Создан"!
-
-Возвращай только валидный JSON без дополнительного текста."""
+**ВАЖНО:** 
+- Всегда используй колонку "Истекает" для дат окончания
+- Оставляй даты в формате DD.MM.YYYY
+- Возвращай только валидный JSON без дополнительного текста"""
 
     user_prompt = f"Проанализируй этот текст и извлеки информацию о доменах:\n\n{text}"
     
@@ -4364,25 +4361,20 @@ async def process_multi_domain_with_groq(text: str) -> dict:
                 
                 # Валидируем результат
                 if "domains" in parsed_result and "dates" in parsed_result:
-                    # Убеждаемся, что даты в правильном формате
+                    # Оставляем даты в оригинальном формате DD.MM.YYYY
                     validated_dates = []
                     for date_str in parsed_result["dates"]:
                         if isinstance(date_str, str):
-                            # Проверяем, что дата уже в формате YYYY-MM-DD
-                            if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
+                            # Проверяем, что дата в формате DD.MM.YYYY или DD/MM/YYYY
+                            if re.match(r'\d{1,2}[./-]\d{1,2}[./-]\d{2,4}', date_str):
                                 validated_dates.append(date_str)
                             else:
-                                # Пытаемся распарсить дату
-                                parsed_date = parse_date_string(date_str)
-                                if parsed_date:
-                                    validated_dates.append(parsed_date)
-                                else:
-                                    # Используем дату по умолчанию
-                                    default_date = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
-                                    validated_dates.append(default_date)
+                                # Если дата в неправильном формате, используем дату по умолчанию
+                                default_date = (get_current_datetime() + timedelta(days=365)).strftime("%d.%m.%Y")
+                                validated_dates.append(default_date)
                         else:
                             # Если дата не строка, используем дату по умолчанию
-                            default_date = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                            default_date = (get_current_datetime() + timedelta(days=365)).strftime("%d.%m.%Y")
                             validated_dates.append(default_date)
                     
                     parsed_result["dates"] = validated_dates
