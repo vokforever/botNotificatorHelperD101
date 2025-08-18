@@ -1868,15 +1868,23 @@ async def smart_parse_service_message(text: str, user_id: int) -> dict:
     
     # Затем проверяем, не является ли это мульти-доменным сообщением
     # Сначала пробуем ИИ-обработку для лучшего качества
+    print(f"🔍 DEBUG: [smart_parse_service_message] Пробуем ИИ-обработку мульти-домена...")
     multi_domain_ai_data = await process_multi_domain_with_groq(text)
+    print(f"🔍 DEBUG: [smart_parse_service_message] Результат ИИ-обработки: {multi_domain_ai_data}")
+    
     if multi_domain_ai_data and "error" not in multi_domain_ai_data:
         print(f"🔍 DEBUG: [smart_parse_service_message] Найден мульти-домен через ИИ, возвращаем: {multi_domain_ai_data}")
         # Добавляем user_id к мульти-доменным данным
         multi_domain_ai_data["user_id"] = user_id
         return multi_domain_ai_data
+    elif multi_domain_ai_data and "error" in multi_domain_ai_data:
+        print(f"🔍 DEBUG: [smart_parse_service_message] ИИ-обработка вернула ошибку: {multi_domain_ai_data['error']}")
     
     # Если ИИ не сработал, используем обычный парсер как fallback
+    print(f"🔍 DEBUG: [smart_parse_service_message] Пробуем обычный парсер мульти-домена...")
     multi_domain_data = parse_multi_domain_message(text)
+    print(f"🔍 DEBUG: [smart_parse_service_message] Результат обычного парсера: {multi_domain_data}")
+    
     if multi_domain_data:
         print(f"🔍 DEBUG: [smart_parse_service_message] Найден мульти-домен через обычный парсер, возвращаем: {multi_domain_data}")
         # Добавляем user_id к мульти-доменным данным
