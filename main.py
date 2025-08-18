@@ -189,12 +189,20 @@ async def send_bot_start_notification():
         start_message += f"Бот готов к работе! 🎉"
         
         # Отправляем сообщение в чат
-        bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        await bot.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=start_message,
-            parse_mode='Markdown'
-        )
+        if bot_application:
+            await bot_application.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=start_message,
+                parse_mode='Markdown'
+            )
+        else:
+            # Fallback: создаем временный экземпляр только для отправки
+            temp_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            await temp_bot.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=start_message,
+                parse_mode='Markdown'
+            )
         
         print("Уведомление о запуске бота отправлено")
         
@@ -281,88 +289,31 @@ async def send_startup_expiry_notification(expiring_services, expired_services):
             message += "\n"
         
         message += "🔧 **Действия:**\n"
-        message += "• Нажмите '💰 Оплатили' если сервис уже оплачен\n"
-        message += "• Нажмите '📅 Продли на год' для автоматического продления\n"
-        message += "• Хостинг и домены будут автоматически продлены на год\n"
+        message += "• Для продления сервисов отправьте в чат команды:\n"
+        message += "• 'прогрэсс.рф - продли на год'\n"
+        message += "• 'жкпрогресс.рф - продли на 3 месяца'\n"
+        message += "• Или укажите несколько доменов сразу\n"
         
-        # Создаем кнопки для каждого сервиса
-        keyboard = []
-        
-        # Добавляем кнопки для истекших сервисов
-        for service, days in expired_services[:3]:  # Максимум 3 кнопки в ряду
-            row = []
-            row.append(InlineKeyboardButton(
-                f"💰 {service.get('name', 'Неизвестно')[:15]}...", 
-                callback_data=f"paid_startup:{service['id']}"
-            ))
-            
-            # Определяем, является ли это хостингом или доменом
-            is_hosting_or_domain = (
-                (service.get('provider') and service.get('provider').lower() in ['хостинг-провайдер', 'доменный регистратор', 'хостинг']) or
-                'хостинг' in service.get('name', '').lower() or
-                'домен' in service.get('name', '').lower() or
-                '.' in service.get('name', '')  # Домены содержат точку
-            )
-            
-            if is_hosting_or_domain:
-                row.append(InlineKeyboardButton(
-                    "📅 Продли на год", 
-                    callback_data=f"extend_startup:{service['id']}:hosting"
-                ))
-            else:
-                row.append(InlineKeyboardButton(
-                    "📅 Продли на год", 
-                    callback_data=f"extend_startup:{service['id']}:service"
-                ))
-            
-            keyboard.append(row)
-        
-        # Добавляем кнопки для сервисов, которые скоро закончатся
-        for service, days in expiring_services[:3]:  # Максимум 3 кнопки в ряду
-            row = []
-            row.append(InlineKeyboardButton(
-                f"💰 {service.get('name', 'Неизвестно')[:15]}...", 
-                callback_data=f"paid_startup:{service['id']}"
-            ))
-            
-            # Определяем, является ли это хостингом или доменом
-            is_hosting_or_domain = (
-                (service.get('provider') and service.get('provider').lower() in ['хостинг-провайдер', 'доменный регистратор', 'хостинг']) or
-                'хостинг' in service.get('name', '').lower() or
-                'домен' in service.get('name', '').lower() or
-                '.' in service.get('name', '')  # Домены содержат точку
-            )
-            
-            if is_hosting_or_domain:
-                row.append(InlineKeyboardButton(
-                    "📅 Продли на год", 
-                    callback_data=f"extend_startup:{service['id']}:hosting"
-                ))
-            else:
-                row.append(InlineKeyboardButton(
-                    "📅 Продли на год", 
-                    callback_data=f"extend_startup:{service['id']}:service"
-                ))
-            
-            keyboard.append(row)
-        
-        # Добавляем общую кнопку для всех сервисов
-        if len(expired_services) + len(expiring_services) > 3:
-            keyboard.append([
-                InlineKeyboardButton("💰 Все оплачены", callback_data="all_paid_startup"),
-                InlineKeyboardButton("📅 Продлить все хостинги", callback_data="extend_all_hosting_startup")
-            ])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # Убираем кнопки - теперь продление через ИИ в чате
+        reply_markup = None
         
         # Отправляем сообщение админу
-        bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        await bot.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=message,
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        if bot_application:
+            await bot_application.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            # Fallback: создаем временный экземпляр только для отправки
+            temp_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            await temp_bot.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
         
         print(f"Уведомление о запуске отправлено: {len(expired_services)} истекших, {len(expiring_services)} скоро истекающих сервисов")
         
@@ -398,12 +349,20 @@ async def send_bot_stop_notification():
         stop_message += f"До свидания! 👋"
         
         # Отправляем сообщение в чат
-        bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        await bot.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=stop_message,
-            parse_mode='Markdown'
-        )
+        if bot_application:
+            await bot_application.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=stop_message,
+                parse_mode='Markdown'
+            )
+        else:
+            # Fallback: создаем временный экземпляр только для отправки
+            temp_bot = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+            await temp_bot.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=stop_message,
+                parse_mode='Markdown'
+            )
         
         print("Уведомление об остановке бота отправлено")
         
@@ -421,6 +380,103 @@ def update_statistics(checks_increment=0, notifications_increment=0):
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_TEXT_MODEL = "llama-3.1-8b-instant"  # Быстрая текстовая модель
 GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # Vision модель
+
+# Функция для обработки кнопки "Все оплачены" на старте
+async def handle_all_paid_startup(update: Update, context: CallbackContext):
+    """Обрабатывает нажатие на кнопку 'Все оплачены' на старте бота"""
+    query = update.callback_query
+    
+    try:
+        # Получаем все активные сервисы
+        response = supabase.table("digital_notificator_services").select("*").eq("status", "active").execute()
+        
+        if not response.data:
+            await query.edit_message_text("✅ Нет активных сервисов для обработки.")
+            return
+        
+        # Обновляем статус всех сервисов на "оплачен"
+        updated_count = 0
+        for service in response.data:
+            try:
+                supabase.table("digital_notificator_services").update({
+                    "status": "paid",
+                    "payment_date": get_current_datetime_iso()
+                }).eq("id", service['id']).execute()
+                updated_count += 1
+            except Exception as e:
+                print(f"Ошибка при обновлении сервиса {service.get('name', 'Неизвестно')}: {e}")
+        
+        await query.edit_message_text(
+            f"💰 **Все сервисы отмечены как оплаченные!**\n\n"
+            f"✅ **Обработано сервисов:** {updated_count}\n"
+            f"📅 **Дата обработки:** {get_current_datetime().strftime('%d.%m.%Y %H:%M')}\n\n"
+            f"Все сервисы больше не будут появляться в уведомлениях.",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        print(f"Ошибка при обработке 'Все оплачены': {e}")
+        await query.edit_message_text(f"❌ Ошибка при обработке: {str(e)}")
+
+# Функция для обработки кнопки "Продлить все хостинги" на старте
+async def handle_extend_all_hosting_startup(update: Update, context: CallbackContext):
+    """Обрабатывает нажатие на кнопку 'Продлить все хостинги' на старте бота"""
+    query = update.callback_query
+    
+    try:
+        # Получаем все активные сервисы
+        response = supabase.table("digital_notificator_services").select("*").eq("status", "active").execute()
+        
+        if not response.data:
+            await query.edit_message_text("✅ Нет активных сервисов для продления.")
+            return
+        
+        # Фильтруем только хостинги и домены
+        hosting_services = []
+        for service in response.data:
+            is_hosting_or_domain = (
+                (service.get('provider') and service.get('provider').lower() in ['хостинг-провайдер', 'доменный регистратор', 'хостинг']) or
+                'хостинг' in service.get('name', '').lower() or
+                'домен' in service.get('name', '').lower() or
+                '.' in service.get('name', '')  # Домены содержат точку
+            )
+            if is_hosting_or_domain:
+                hosting_services.append(service)
+        
+        if not hosting_services:
+            await query.edit_message_text("✅ Нет хостингов или доменов для продления.")
+            return
+        
+        # Продлеваем все хостинги и домены на год
+        extended_count = 0
+        for service in hosting_services:
+            try:
+                current_expires_at = service.get('expires_at')
+                new_expires_at = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
+                
+                supabase.table("digital_notificator_services").update({
+                    "expires_at": new_expires_at,
+                    "status": "active",
+                    "last_notification": None,
+                    "notification_date": None
+                }).eq("id", service['id']).execute()
+                
+                extended_count += 1
+            except Exception as e:
+                print(f"Ошибка при продлении сервиса {service.get('name', 'Неизвестно')}: {e}")
+        
+        await query.edit_message_text(
+            f"📅 **Все хостинги и домены продлены на год!**\n\n"
+            f"✅ **Продлено сервисов:** {extended_count}\n"
+            f"📅 **Дата продления:** {get_current_datetime().strftime('%d.%m.%Y %H:%M')}\n"
+            f"⏰ **Новая дата окончания:** {(get_current_datetime() + timedelta(days=365)).strftime('%d.%m.%Y')}\n\n"
+            f"Все хостинги и домены будут отслеживаться автоматически!",
+            parse_mode='Markdown'
+        )
+        
+    except Exception as e:
+        print(f"Ошибка при продлении всех хостингов: {e}")
+        await query.edit_message_text(f"❌ Ошибка при продлении: {str(e)}")
 
 # Функция для проверки длины callback данных
 def validate_callback_data(callback_data: str) -> bool:
@@ -522,13 +578,16 @@ async def send_service_notification(service, notification_type, days_until_expir
         else:
             message += "📅 Напоминание о приближающемся окончании сервиса."
         
+        message += "\n\n💡 *Для продления сервиса отправьте в чат:*\n"
+        message += f"• {service['name']} - продли на год\n"
+        message += f"• {service['name']} - продли на 3 месяца\n"
+        message += f"• {service['name']} - продли на 6 месяцев"
+        
         # Создаем кнопки для управления
         keyboard = [
             [
                 InlineKeyboardButton("✅ Уведомил, жду оплаты", 
-                                   callback_data=f"notified:{service['id']}:{notification_type}"),
-                InlineKeyboardButton("💰 Оплатили", 
-                                   callback_data=f"paid:{service['id']}")
+                                   callback_data=f"notified:{service['id']}:{notification_type}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -556,7 +615,18 @@ async def handle_notification_buttons(update: Update, context: CallbackContext):
     try:
         if query.data.startswith("notified:"):
             # Пользователь нажал "Уведомил, жду оплаты"
-            _, service_id, notification_type = query.data.split(":")
+            print(f"🔍 DEBUG: Обработка 'notified' для данных: {query.data}")
+            try:
+                _, service_id, notification_type = query.data.split(":")
+                if not service_id or not notification_type:
+                    print(f"❌ DEBUG: Пустой service_id или notification_type в callback данных: {query.data}")
+                    await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                    return
+                print(f"🔍 DEBUG: Извлечен service_id: {service_id}, notification_type: {notification_type}")
+            except ValueError as e:
+                print(f"❌ DEBUG: Ошибка парсинга callback данных: {e}, данные: {query.data}")
+                await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                return
             
             # Обновляем статус сервиса
             supabase.table("digital_notificator_services").update({
@@ -573,7 +643,18 @@ async def handle_notification_buttons(update: Update, context: CallbackContext):
             
         elif query.data.startswith("paid:"):
             # Пользователь нажал "Оплатили"
-            _, service_id = query.data.split(":")
+            print(f"🔍 DEBUG: Обработка 'paid' для данных: {query.data}")
+            try:
+                _, service_id = query.data.split(":")
+                if not service_id:
+                    print(f"❌ DEBUG: Пустой service_id в callback данных: {query.data}")
+                    await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                    return
+                print(f"🔍 DEBUG: Извлечен service_id: {service_id}")
+            except ValueError as e:
+                print(f"❌ DEBUG: Ошибка парсинга callback данных: {e}, данные: {query.data}")
+                await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                return
             
             # Обновляем статус сервиса на "оплачен" и убираем из уведомлений
             supabase.table("digital_notificator_services").update({
@@ -589,10 +670,23 @@ async def handle_notification_buttons(update: Update, context: CallbackContext):
             
         elif query.data.startswith("paid_startup:"):
             # Пользователь нажал "Оплатили" на старте бота
-            _, service_id = query.data.split(":")
+            print(f"🔍 DEBUG: Обработка кнопки 'Оплатили' для сервиса {query.data}")
+            try:
+                _, service_id = query.data.split(":")
+                if not service_id:
+                    print(f"❌ DEBUG: Пустой service_id в callback данных: {query.data}")
+                    await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                    return
+                print(f"🔍 DEBUG: Извлечен service_id: {service_id}")
+            except ValueError as e:
+                print(f"❌ DEBUG: Ошибка парсинга callback данных: {e}, данные: {query.data}")
+                await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                return
             
             # Получаем информацию о сервисе
+            print(f"🔍 DEBUG: Поиск сервиса с ID: {service_id}")
             service_response = supabase.table("digital_notificator_services").select("*").eq("id", service_id).execute()
+            print(f"🔍 DEBUG: Результат поиска: {len(service_response.data) if service_response.data else 0} сервисов")
             if service_response.data:
                 service = service_response.data[0]
                 service_name = service.get('name', 'Неизвестно')
@@ -615,12 +709,26 @@ async def handle_notification_buttons(update: Update, context: CallbackContext):
                 
         elif query.data.startswith("extend_startup:"):
             # Пользователь нажал "Продли на год" на старте бота
-            _, service_id, service_type = query.data.split(":")
+            print(f"🔍 DEBUG: Обработка кнопки 'Продли на год' для сервиса {query.data}")
+            try:
+                _, service_id, service_type = query.data.split(":")
+                if not service_id or not service_type:
+                    print(f"❌ DEBUG: Пустой service_id или service_type в callback данных: {query.data}")
+                    await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                    return
+                print(f"🔍 DEBUG: Извлечен service_id: {service_id}, service_type: {service_type}")
+            except ValueError as e:
+                print(f"❌ DEBUG: Ошибка парсинга callback данных: {e}, данные: {query.data}")
+                await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                return
             
             try:
                 # Получаем информацию о сервисе
+                print(f"🔍 DEBUG: Поиск сервиса для продления с ID: {service_id}")
                 service_response = supabase.table("digital_notificator_services").select("*").eq("id", service_id).execute()
+                print(f"🔍 DEBUG: Результат поиска для продления: {len(service_response.data) if service_response.data else 0} сервисов")
                 if not service_response.data:
+                    print(f"❌ DEBUG: Сервис с ID {service_id} не найден в базе данных")
                     await query.edit_message_text("❌ Сервис не найден в базе данных.")
                     return
                 
@@ -992,9 +1100,21 @@ async def handle_button(update: Update, context: CallbackContext):
     await query.answer()
     
     if query.data == "cancel_save":
+        print(f"🔍 DEBUG: Обработка 'cancel_save'")
         await query.edit_message_text("Данные не сохранены.")
     elif query.data.startswith("save_data:"):
-        data = query.data.split(":", 1)[1]
+        print(f"🔍 DEBUG: Обработка 'save_data' для данных: {query.data}")
+        try:
+            data = query.data.split(":", 1)[1]
+            if not data:
+                print(f"❌ DEBUG: Пустые данные в callback: {query.data}")
+                await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                return
+            print(f"🔍 DEBUG: Извлеченные данные: {data}")
+        except (ValueError, IndexError) as e:
+            print(f"❌ DEBUG: Ошибка парсинга callback данных: {e}, данные: {query.data}")
+            await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+            return
         # Сохранение в Supabase с статусом "active"
         # В новых версиях python-telegram-bot user_id доступен через context
         user_id = context.user_data.get('user_id', 0) if context.user_data else 0
@@ -1008,7 +1128,18 @@ async def handle_button(update: Update, context: CallbackContext):
         
         await query.edit_message_text("Данные успешно сохранены!")
     elif query.data.startswith("select_project:"):
-        project_name = query.data.split(":", 1)[1]
+        print(f"🔍 DEBUG: Обработка 'select_project' для данных: {query.data}")
+        try:
+            project_name = query.data.split(":", 1)[1]
+            if not project_name:
+                print(f"❌ DEBUG: Пустое название проекта в callback: {query.data}")
+                await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+                return
+            print(f"🔍 DEBUG: Извлеченное название проекта: {project_name}")
+        except (ValueError, IndexError) as e:
+            print(f"❌ DEBUG: Ошибка парсинга callback данных: {e}, данные: {query.data}")
+            await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+            return
         
         if project_name == "new":
             await query.edit_message_text(
@@ -1880,12 +2011,83 @@ def simple_parse_service_message(text: str, user_id: int) -> dict:
 async def handle_text_message(update: Update, context: CallbackContext):
     """Обрабатывает текстовые сообщения для умного парсинга сервисов"""
     
+    global callback_data_counter, callback_data_storage
+    
     text = update.message.text.strip()
     user_id = update.message.from_user.id
     
     # Игнорируем команды
     if text.startswith('/'):
         return
+    
+    # Проверяем, является ли это командой продления
+    if any(keyword in text.lower() for keyword in ['продли', 'продлить', 'продление']):
+        await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
+        
+        try:
+            # Обрабатываем команду продления через ИИ
+            extension_data = await process_extension_command(text, user_id)
+            
+            if "error" in extension_data:
+                await update.message.reply_text(
+                    f"❌ Ошибка при обработке команды продления: {extension_data['error']}\n\n"
+                    f"Попробуйте отправить команду в более простом формате:\n"
+                    f"• прогрэсс.рф - продли на год\n"
+                    f"• домен1.рф, домен2.ru - продли на 3 месяца"
+                )
+                return
+            
+            # Сохраняем данные продления для подтверждения пользователем
+            callback_data_counter += 1
+            callback_id = f"extension_{callback_data_counter}"
+            
+            # Сохраняем данные во временное хранилище
+            callback_data_storage[callback_id] = {
+                **extension_data,
+                'type': 'extension_command',
+                'timestamp': get_current_datetime_iso()
+            }
+            
+            # Формируем сообщение для подтверждения
+            message = f"📅 *Команда продления доменов*\n\n"
+            message += f"🔍 **Найдено доменов:** {len(extension_data.get('domains', []))}\n"
+            message += f"⏰ **Период продления:** {extension_data.get('extension_period', 'N/A')}\n"
+            message += f"📅 **Дней:** {extension_data.get('extension_days', 'N/A')}\n"
+            message += f"📊 **Месяцев:** {extension_data.get('extension_months', 'N/A')}\n\n"
+            
+            # Показываем домены
+            domains = extension_data.get('domains', [])
+            message += "🌐 **Домены для продления:**\n"
+            for i, domain in enumerate(domains[:10], 1):  # Показываем первые 10
+                message += f"{i}. {domain}\n"
+            
+            if len(domains) > 10:
+                message += f"... и еще {len(domains) - 10} доменов\n"
+            
+            message += f"\n💡 **Команда:** {extension_data.get('command_text', 'N/A')}\n"
+            message += f"\nПродлить все домены в базе данных?"
+            
+            # Создаем кнопки для подтверждения
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Да, продлить", 
+                                       callback_data=f"confirm_extension:{callback_id}"),
+                    InlineKeyboardButton("❌ Нет, отменить", 
+                                       callback_data="cancel_extension")
+                ]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+            return
+            
+        except Exception as e:
+            await update.message.reply_text(
+                f"❌ Ошибка при обработке команды продления: {str(e)}\n\n"
+                f"Попробуйте отправить команду в более простом формате."
+            )
+            return
     
     # Показываем индикатор "печатает..."
     await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
@@ -1924,7 +2126,6 @@ async def handle_text_message(update: Update, context: CallbackContext):
             return
         
         # Генерируем уникальный ID для callback данных
-        global callback_data_counter
         callback_data_counter += 1
         callback_id = f"parsed_{callback_data_counter}"
         
@@ -3064,29 +3265,64 @@ async def handle_all_callbacks(update: Update, context: CallbackContext):
         print(f"🔍 DEBUG: Получен callback: {query.data}")
         print(f"🔍 DEBUG: Тип callback: {type(query.data)}")
         print(f"🔍 DEBUG: Длина callback: {len(query.data) if query.data else 0}")
+        print(f"🔍 DEBUG: User ID: {query.from_user.id}")
+        print(f"🔍 DEBUG: Chat ID: {query.message.chat.id if query.message else 'N/A'}")
         
         await query.answer()
         
+        # Проверяем, что callback данные не пустые
+        if not query.data:
+            print("❌ DEBUG: Получены пустые callback данные")
+            await query.edit_message_text("❌ Ошибка: пустые данные callback")
+            return
+        
         if query.data.startswith("save_parsed:"):
             # Обработка сохранения распарсенных данных
+            print(f"🔍 DEBUG: Обработка 'save_parsed' для данных: {query.data}")
             await handle_parsed_data_save(update, context)
         elif query.data.startswith("edit_parsed:"):
             # Обработка редактирования распарсенных данных
+            print(f"🔍 DEBUG: Обработка 'edit_parsed' для данных: {query.data}")
             await handle_parsed_data_save(update, context)  # Эта функция обрабатывает оба случая
         elif query.data == "cancel_parsed":
             # Обработка отмены сохранения распарсенных данных
+            print(f"🔍 DEBUG: Обработка 'cancel_parsed'")
             await handle_parsed_data_save(update, context)
         elif query.data.startswith("apply_cost:"):
             # Обработка применения изменений стоимости
+            print(f"🔍 DEBUG: Обработка 'apply_cost' для данных: {query.data}")
             await handle_cost_edit_apply(update, context)
         elif query.data.startswith("notified:") or query.data.startswith("paid:"):
             # Обработка кнопок уведомлений
+            print(f"🔍 DEBUG: Обработка уведомлений для данных: {query.data}")
             await handle_notification_buttons(update, context)
+        elif query.data.startswith("paid_startup:") or query.data.startswith("extend_startup:"):
+            # Обработка кнопок уведомлений на старте
+            print(f"🔍 DEBUG: Обработка уведомлений на старте для данных: {query.data}")
+            await handle_notification_buttons(update, context)
+        elif query.data == "all_paid_startup":
+            # Обработка кнопки "Все оплачены"
+            print(f"🔍 DEBUG: Обработка 'Все оплачены'")
+            await handle_all_paid_startup(update, context)
+        elif query.data == "extend_all_hosting_startup":
+            # Обработка кнопки "Продлить все хостинги"
+            print(f"🔍 DEBUG: Обработка 'Продлить все хостинги'")
+            await handle_extend_all_hosting_startup(update, context)
         elif query.data.startswith("select_project:") or query.data.startswith("select_provider:"):
             # Обработка выбора проекта или провайдера
+            print(f"🔍 DEBUG: Обработка выбора проекта/провайдера для данных: {query.data}")
             await handle_button(update, context)
+        elif query.data.startswith("confirm_extension:"):
+            # Обработка подтверждения продления доменов
+            print(f"🔍 DEBUG: Обработка подтверждения продления для данных: {query.data}")
+            await handle_extension_confirmation(update, context)
+        elif query.data == "cancel_extension":
+            # Обработка отмены продления доменов
+            print(f"🔍 DEBUG: Обработка отмены продления")
+            await query.edit_message_text("❌ Продление доменов отменено.")
         else:
             # Обработка всех остальных callback запросов
+            print(f"🔍 DEBUG: Обработка остальных callback'ов для данных: {query.data}")
             await handle_button(update, context)
             
     except Exception as e:
@@ -3157,6 +3393,9 @@ async def main():
     application.add_handler(CallbackQueryHandler(handle_all_callbacks)) # Унифицированный обработчик всех callback запросов
     
     print("Бот запущен с планировщиком уведомлений")
+    
+    # Инициализируем приложение перед отправки уведомлений
+    await application.initialize()
     
     # Отправляем уведомление о запуске
     await send_bot_start_notification()
@@ -3603,6 +3842,235 @@ async def process_multi_domain_with_groq(text: str) -> dict:
             
     except Exception as e:
         return {"error": f"Ошибка при обработке через Groq AI: {str(e)}"}
+
+# Функция для ИИ-обработки команд продления доменов
+async def process_extension_command(text: str, user_id: int) -> dict:
+    """Обрабатывает команды продления доменов через ИИ
+    
+    Примеры команд:
+    - прогрэсс.рф - продли на год
+    - прогрэсс.рф - продли на 3 месяца
+    - прогрэсс.рф, про-гресс.рф, жкпрогресс.рф - продли на год
+    """
+    
+    if not GROQ_API_KEY:
+        return {"error": "GROQ_API_KEY не настроен"}
+    
+    # Получаем текущее время для промпта
+    current_time = get_current_datetime()
+    current_time_str = current_time.strftime("%d.%m.%Y %H:%M (МСК)")
+    
+    system_prompt = f"""Ты - эксперт по анализу команд продления доменов и сервисов.
+
+**ВАЖНО: Текущее время: {current_time_str}**
+
+Твоя задача - извлечь из текста информацию о доменах/сервисах и периоде продления.
+
+**Формат ответа (строго JSON):**
+```json
+{{
+    "type": "extension_command",
+    "domains": ["домен1.рф", "домен2.ru"],
+    "extension_period": "1 year",
+    "extension_days": 365,
+    "extension_months": 12,
+    "parsing_method": "groq_ai_extension",
+    "total_domains": 2,
+    "command_text": "оригинальный текст команды"
+}}
+```
+
+**Правила обработки:**
+
+1. **Домены/сервисы:**
+   - Ищи строки, содержащие точки (например, "миндаль.рус", "kvartal-mindal.ru")
+   - Ищи названия сервисов без точек
+   - Разделяй по запятым, точкам с запятой, переносам строк
+
+2. **Период продления:**
+   - "год", "на год", "1 год" → 365 дней, 12 месяцев
+   - "3 месяца", "3 мес", "3 мес." → 90 дней, 3 месяца
+   - "6 месяцев", "6 мес", "6 мес." → 180 дней, 6 месяцев
+   - "месяц", "1 месяц" → 30 дней, 1 месяц
+   - "2 месяца", "2 мес" → 60 дней, 2 месяца
+
+3. **Формат команд:**
+   - Один домен: "прогрэсс.рф - продли на год"
+   - Несколько доменов: "домен1.рф, домен2.ru - продли на 3 месяца"
+   - С переносами: "домен1.рф\nдомен2.ru\n- продли на год"
+
+**ВАЖНО:** Всегда возвращай валидный JSON без дополнительного текста!"""
+
+    user_prompt = f"Проанализируй эту команду продления и извлеки информацию:\n\n{text}"
+    
+    try:
+        url = f"{GROQ_BASE_URL}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "model": GROQ_TEXT_MODEL,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "max_tokens": 1000,
+            "temperature": 0.1
+        }
+        
+        response = requests.post(url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # Пытаемся распарсить JSON ответ
+            try:
+                parsed_result = json.loads(content)
+                
+                # Валидируем результат
+                if "domains" in parsed_result and "extension_period" in parsed_result:
+                    # Дополняем данные
+                    parsed_result["user_id"] = user_id
+                    parsed_result["total_domains"] = len(parsed_result["domains"])
+                    parsed_result["command_text"] = text
+                    
+                    print(f"🔍 DEBUG: [GROQ AI Extension] Успешно обработана команда продления")
+                    print(f"🔍 DEBUG: [GROQ AI Extension] Домены: {parsed_result['domains']}")
+                    print(f"🔍 DEBUG: [GROQ AI Extension] Период: {parsed_result['extension_period']}")
+                    
+                    return parsed_result
+                else:
+                    return {"error": "Неверный формат ответа от Groq AI для продления"}
+                    
+            except json.JSONDecodeError as e:
+                print(f"🔍 DEBUG: [GROQ AI Extension] Ошибка парсинга JSON: {e}")
+                return {"error": f"Ошибка парсинга ответа от Groq AI: {str(e)}", "raw_response": content}
+        else:
+            return {"error": f"Ошибка API: {response.status_code}", "details": response.text}
+            
+    except Exception as e:
+        return {"error": f"Ошибка при обработке команды продления через Groq AI: {str(e)}"}
+
+# Функция для продления доменов на основе команды
+async def extend_domains_from_command(extension_data: dict) -> dict:
+    """Продлевает домены на основе данных от ИИ"""
+    
+    try:
+        domains = extension_data.get("domains", [])
+        extension_days = extension_data.get("extension_days", 365)
+        extension_months = extension_data.get("extension_months", 12)
+        user_id = extension_data.get("user_id")
+        
+        if not domains:
+            return {"error": "Не указаны домены для продления"}
+        
+        # Рассчитываем новую дату окончания
+        new_expires_at = (get_current_datetime() + timedelta(days=extension_days)).strftime("%Y-%m-%d")
+        
+        # Ищем домены в базе данных
+        extended_count = 0
+        not_found_domains = []
+        
+        for domain in domains:
+            # Ищем сервис по названию (домену)
+            response = supabase.table("digital_notificator_services").select("*").eq("name", domain).execute()
+            
+            if response.data:
+                service = response.data[0]
+                service_id = service['id']
+                old_expires_at = service.get('expires_at')
+                
+                # Обновляем дату окончания
+                supabase.table("digital_notificator_services").update({
+                    "expires_at": new_expires_at,
+                    "status": "active",  # Возвращаем в активные
+                    "last_notification": None,  # Сбрасываем уведомления
+                    "notification_date": None
+                }).eq("id", service_id).execute()
+                
+                extended_count += 1
+                print(f"✅ Продлен домен {domain} с {old_expires_at} до {new_expires_at}")
+            else:
+                not_found_domains.append(domain)
+                print(f"⚠️ Домен {domain} не найден в базе данных")
+        
+        # Формируем результат
+        result = {
+            "success": True,
+            "extended_count": extended_count,
+            "not_found_count": len(not_found_domains),
+            "new_expires_at": new_expires_at,
+            "extension_period": extension_data.get("extension_period", "1 year"),
+            "total_domains": len(domains)
+        }
+        
+        if not_found_domains:
+            result["not_found_domains"] = not_found_domains
+        
+        return result
+        
+    except Exception as e:
+        return {"error": f"Ошибка при продлении доменов: {str(e)}"}
+
+# Функция для обработки подтверждения продления доменов
+async def handle_extension_confirmation(update: Update, context: CallbackContext):
+    """Обрабатывает подтверждение продления доменов"""
+    
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        # Извлекаем callback_id из данных
+        callback_id = query.data.split(":", 1)[1]
+        if not callback_id:
+            await query.edit_message_text("❌ Ошибка: неверный формат callback данных")
+            return
+        
+        # Получаем данные продления из хранилища
+        extension_data = callback_data_storage.get(callback_id)
+        if not extension_data:
+            await query.edit_message_text("❌ Ошибка: данные продления не найдены или устарели")
+            return
+        
+        # Показываем индикатор "печатает..."
+        await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
+        
+        # Продлеваем домены
+        result = await extend_domains_from_command(extension_data)
+        
+        if "error" in result:
+            await query.edit_message_text(
+                f"❌ Ошибка при продлении доменов: {result['error']}"
+            )
+            return
+        
+        # Формируем сообщение об успешном продлении
+        message = f"✅ *Домены успешно продлены!*\n\n"
+        message += f"📊 **Обработано доменов:** {result['total_domains']}\n"
+        message += f"✅ **Продлено:** {result['extended_count']}\n"
+        message += f"⚠️ **Не найдено:** {result['not_found_count']}\n"
+        message += f"📅 **Новая дата окончания:** {result['new_expires_at']}\n"
+        message += f"⏰ **Период продления:** {result['extension_period']}\n"
+        
+        if result.get('not_found_domains'):
+            message += f"\n❌ **Домены не найдены в базе:**\n"
+            for domain in result['not_found_domains']:
+                message += f"• {domain}\n"
+            message += f"\n💡 Добавьте их в базу данных через команду /add"
+        
+        # Очищаем данные из хранилища
+        if callback_id in callback_data_storage:
+            del callback_data_storage[callback_id]
+        
+        await query.edit_message_text(message, parse_mode='Markdown')
+        
+    except Exception as e:
+        await query.edit_message_text(
+            f"❌ Ошибка при обработке подтверждения продления: {str(e)}"
+        )
 
 if __name__ == "__main__":
     if check_single_instance():
