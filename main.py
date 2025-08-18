@@ -2573,7 +2573,9 @@ async def handle_text_message(update: Update, context: CallbackContext):
             message = f"🌐 *Мульти-доменное сообщение*\n\n"
             
             if parsed_data.get('project'):
-                message += f"🏢 **Проект:** {parsed_data.get('project')}\n"
+                # Экранируем специальные символы для Markdown
+                safe_project = str(parsed_data.get('project')).replace('*', '\\*').replace('_', '\\_').replace('`', '\\`').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+                message += f"🏢 **Проект:** {safe_project}\n"
             
             message += f"📊 **Найдено доменов:** {parsed_data.get('total_domains', 0)}\n"
             message += f"📅 **Найдено дат:** {parsed_data.get('total_dates', 0)}\n\n"
@@ -2586,7 +2588,10 @@ async def handle_text_message(update: Update, context: CallbackContext):
             for i in range(min(5, len(domains))):  # Показываем первые 5
                 domain = domains[i]
                 date = dates[i] if i < len(dates) else "Дата не указана"
-                message += f"• {domain} → {date}\n"
+                # Экранируем специальные символы для Markdown
+                safe_domain = str(domain).replace('*', '\\*').replace('_', '\\_').replace('`', '\\`').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+                safe_date = str(date).replace('*', '\\*').replace('_', '\\_').replace('`', '\\`').replace('[', '\\[').replace(']', '\\]').replace('(', '\\(').replace(')', '\\)').replace('~', '\\~').replace('>', '\\>').replace('#', '\\#').replace('+', '\\+').replace('-', '\\-').replace('=', '\\=').replace('|', '\\|').replace('{', '\\{').replace('}', '\\}').replace('.', '\\.').replace('!', '\\!')
+                message += f"• {safe_domain} → {safe_date}\n"
             
             if len(domains) > 5:
                 message += f"... и еще {len(domains) - 5} доменов\n"
