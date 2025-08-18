@@ -672,15 +672,32 @@ async def handle_natural_language(update: Update, context: CallbackContext):
             # Выполняем запрошенные функции
             results = []
             for tool_call in response["tool_calls"]:
-                result = await execute_function(
-                    tool_call.function.name,
-                    json.loads(tool_call.function.arguments),
-                    user_id
-                )
-                results.append(result)
+                # tool_call is a dictionary, not an object
+                function_name = tool_call.get("function", {}).get("name")
+                function_args = tool_call.get("function", {}).get("arguments", "{}")
+                
+                if function_name and function_args:
+                    try:
+                        # Parse arguments if it's a string
+                        if isinstance(function_args, str):
+                            arguments = json.loads(function_args)
+                        else:
+                            arguments = function_args
+                        
+                        result = await execute_function(function_name, arguments, user_id)
+                        results.append(result)
+                    except Exception as func_error:
+                        print(f"❌ Ошибка при выполнении функции {function_name}: {func_error}")
+                        results.append(f"❌ Ошибка при выполнении функции {function_name}: {str(func_error)}")
+                else:
+                    print(f"⚠️ Неверный формат tool_call: {tool_call}")
+                    results.append("⚠️ Неверный формат вызова функции")
             
             # Отправляем результаты пользователю
-            await update.message.reply_text("\n\n".join(results))
+            if results:
+                await update.message.reply_text("\n\n".join(results))
+            else:
+                await update.message.reply_text("❌ Не удалось выполнить запрошенные функции")
         else:
             # Просто отвечаем текстом
             await update.message.reply_text(response["content"])
