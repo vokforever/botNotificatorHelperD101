@@ -1078,6 +1078,49 @@ def parse_money_and_days_message(text: str) -> dict:
 def simple_parse_service_message(text: str, user_id: int) -> dict:
     """Простой парсинг сообщения о сервисе (fallback)"""
     
+    # Специальная обработка для хостинга с указанием года
+    hosting_pattern = r'хостинг\s*\n*\s*([\d\s,]+)\s*₽\s*год'
+    hosting_match = re.search(hosting_pattern, text, re.IGNORECASE)
+    
+    if hosting_match:
+        try:
+            # Извлекаем стоимость хостинга
+            cost_str = hosting_match.group(1).replace(' ', '').replace(',', '.')
+            cost = float(cost_str)
+            
+            # Ищем количество дней
+            days_pattern = r'на\s+(\d+)\s+дн[ея]'
+            days_match = re.search(days_pattern, text)
+            
+            if days_match:
+                days = int(days_match.group(1))
+                # Рассчитываем дату окончания от текущей даты
+                current_date = get_current_datetime()
+                end_date = current_date + timedelta(days=days)
+                expires_at = end_date.strftime("%Y-%m-%d")
+            else:
+                # Если дни не указаны, используем год от текущей даты
+                current_date = get_current_datetime()
+                end_date = current_date + timedelta(days=365)
+                expires_at = end_date.strftime("%Y-%m-%d")
+            
+            # Ищем название проекта в первой строке
+            lines = text.strip().split('\n')
+            project = lines[0].strip() if lines else None
+            
+            return {
+                "name": "Хостинг",
+                "expires_at": expires_at,
+                "user_id": user_id,
+                "description": text,
+                "cost": cost,
+                "project": project,
+                "provider": "Хостинг-провайдер",
+                "parsing_method": "simple_hosting"
+            }
+        except (ValueError, TypeError) as e:
+            print(f"Ошибка при парсинге хостинга: {e}")
+    
     # Ищем дату в тексте
     date_patterns = [
         r'(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})',  # DD/MM/YYYY или DD.MM.YYYY
@@ -1123,11 +1166,38 @@ def simple_parse_service_message(text: str, user_id: int) -> dict:
     if not expires_at:
         expires_at = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
     
+    # Ищем стоимость в тексте
+    cost = None
+    cost_patterns = [
+        r'([\d\s,]+)\s*₽',  # 14736.00 ₽
+        r'([\d\s,]+)\s*рубл',  # 14736.00 рубл
+    ]
+    
+    for pattern in cost_patterns:
+        match = re.search(pattern, text)
+        if match:
+            try:
+                cost_str = match.group(1).replace(' ', '').replace(',', '.')
+                cost = float(cost_str)
+                break
+            except (ValueError, TypeError):
+                continue
+    
+    # Ищем название проекта в первой строке
+    lines = text.strip().split('\n')
+    project = lines[0].strip() if lines else None
+    
+    # Определяем название сервиса
+    service_name = "Хостинг" if "хостинг" in text.lower() else "Сервис"
+    
     return {
-        "name": text[:100],  # Первые 100 символов как название
+        "name": service_name,
         "expires_at": expires_at,
         "user_id": user_id,
         "description": text,
+        "cost": cost,
+        "project": project,
+        "provider": "Хостинг-провайдер" if "хостинг" in text.lower() else None,
         "parsing_method": "simple"
     }
 
