@@ -59,3 +59,4 @@ COMMENT ON COLUMN digital_notificator_services.cost IS 'Стоимость ус�
 COMMENT ON COLUMN digital_notificator_services.project IS 'Название проекта/заказчика';
 COMMENT ON COLUMN digital_notificator_services.provider IS 'Название сервиса/провайдера для оплаты';
 COMMENT ON COLUMN digital_notificator_services.description IS 'Описание сервиса';
+

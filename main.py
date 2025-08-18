@@ -25,9 +25,15 @@ TODO ЛИСТ - Задачи для развития бота
 - Добавлено текущее время во все AI промпты
 - Очищен код от неиспользуемых функций
 - Добавлен мульти-доменный парсер для обработки множественных доменов
+- Исправлена ошибка парсинга JSON от Groq AI для команд продления
+- Полная интеграция системы продлений с Supabase
+- Добавлено логирование всех операций продления в базу данных
+- Создана система отслеживания статусов операций продления
 
 🔄 В РАБОТЕ:
 - Тестирование корректности парсинга дат через Groq AI
+- Мониторинг качества работы системы продлений
+- Оптимизация производительности AI запросов для продлений
 
 📋 ПЛАНИРУЕТСЯ:
 - Улучшение точности распознавания проектов
@@ -35,15 +41,22 @@ TODO ЛИСТ - Задачи для развития бота
 - Добавление новых типов сервисов
 - Улучшение пользовательского интерфейса
 - Расширение возможностей уведомлений
+- Добавление статистики по продлениям (графики, отчеты)
+- Интеграция с календарем для планирования продлений
+- Автоматические напоминания о необходимости продления
 
 🐛 ИЗВЕСТНЫЕ ПРОБЛЕМЫ:
 - Groq AI иногда возвращает неправильные даты (2024 вместо 2025)
 - Нужно мониторить качество парсинга после добавления текущего времени в промпты
+- ~~Groq AI возвращает невалидный JSON для команд продления~~ ✅ ИСПРАВЛЕНО
 
 💡 ИДЕИ ДЛЯ РАЗВИТИЯ:
 - ДОбавить чтение почт, на которые приходят сообщения о прекращении работы сервисов и оплаты.
 - Интеграция с календарем для планирования платежей
 - Экспорт данных в различные форматы
+- Дашборд для мониторинга продлений и статистики
+- Интеграция с системами мониторинга доменов (WHOIS, DNS)
+- Автоматическое определение необходимости продления на основе активности сервиса
 
 📁 ПОДРОБНЫЙ TODO: см. файл TODO.md
 """
@@ -2341,7 +2354,8 @@ async def handle_text_message(update: Update, context: CallbackContext):
                     f"❌ Ошибка при обработке команды продления: {extension_data['error']}\n\n"
                     f"Попробуйте отправить команду в более простом формате:\n"
                     f"• прогрэсс.рф - продли на год\n"
-                    f"• домен1.рф, домен2.ru - продли на 3 месяца"
+                    f"• домен1.рф, домен2.ru - продли на 3 месяца\n"
+                    f"• Netflix, Spotify - продли на месяц"
                 )
                 return
             
@@ -2356,24 +2370,38 @@ async def handle_text_message(update: Update, context: CallbackContext):
                 'timestamp': get_current_datetime_iso()
             }
             
+            # Сохраняем данные продления в Supabase (статус "pending")
+            print("💾 Сохраняем данные продления в Supabase (статус pending)...")
+            try:
+                store_result = await store_domain_renewal_in_supabase(extension_data)
+                if "success" in store_result:
+                    print(f"✅ Данные продления сохранены в Supabase с ID: {store_result['renewal_id']}")
+                    # Сохраняем ID записи в Supabase для последующего обновления
+                    callback_data_storage[callback_id]['supabase_renewal_id'] = store_result['renewal_id']
+                else:
+                    print(f"⚠️ Предупреждение: не удалось сохранить в Supabase: {store_result.get('error', 'Unknown error')}")
+            except Exception as e:
+                print(f"⚠️ Предупреждение: ошибка при сохранении в Supabase: {e}")
+                # Продолжаем выполнение, даже если не удалось сохранить в Supabase
+            
             # Формируем сообщение для подтверждения
-            message = f"📅 *Команда продления доменов*\n\n"
-            message += f"🔍 **Найдено доменов:** {len(extension_data.get('domains', []))}\n"
+            message = f"📅 *Команда продления сервисов*\n\n"
+            message += f"🔍 **Найдено сервисов:** {len(extension_data.get('domains', []))}\n"
             message += f"⏰ **Период продления:** {extension_data.get('extension_period', 'N/A')}\n"
             message += f"📅 **Дней:** {extension_data.get('extension_days', 'N/A')}\n"
             message += f"📊 **Месяцев:** {extension_data.get('extension_months', 'N/A')}\n\n"
             
-            # Показываем домены
-            domains = extension_data.get('domains', [])
-            message += "🌐 **Домены для продления:**\n"
-            for i, domain in enumerate(domains[:10], 1):  # Показываем первые 10
-                message += f"{i}. {domain}\n"
+            # Показываем сервисы
+            services = extension_data.get('domains', [])
+            message += "🌐 **Сервисы для продления:**\n"
+            for i, service in enumerate(services[:10], 1):  # Показываем первые 10
+                message += f"{i}. {service}\n"
             
-            if len(domains) > 10:
-                message += f"... и еще {len(domains) - 10} доменов\n"
+            if len(services) > 10:
+                message += f"... и еще {len(services) - 10} сервисов\n"
             
             message += f"\n💡 **Команда:** {extension_data.get('command_text', 'N/A')}\n"
-            message += f"\nПродлить все домены в базе данных?"
+            message += f"\nПродлить все сервисы в базе данных?"
             
             # Создаем кнопки для подтверждения
             keyboard = [
@@ -2393,7 +2421,10 @@ async def handle_text_message(update: Update, context: CallbackContext):
         except Exception as e:
             await update.message.reply_text(
                 f"❌ Ошибка при обработке команды продления: {str(e)}\n\n"
-                f"Попробуйте отправить команду в более простом формате."
+                f"Попробуйте отправить команду в более простом формате:\n"
+                f"• прогрэсс.рф - продли на год\n"
+                f"• домен1.рф, домен2.ru - продли на 3 месяца\n"
+                f"• Netflix, Spotify - продли на месяц"
             )
             return
     
@@ -2932,10 +2963,13 @@ async def help_command(update: Update, context: CallbackContext):
 • `/providers` - Показать список провайдеров и управлять ими
 • `/test_groq` - Тестировать Groq API
 • `/test_logging` - Тестировать логирование бота
+• `/test_renewals` - Тестировать систему продлений и интеграцию с Supabase (домены, подписки, сервисы)
 • `/update_cost <ID> <стоимость>` - Обновить стоимость сервиса (только для админа)
 • `/edit_cost <ID> <описание>` - Умно изменить стоимость через ИИ (только для админа)
 • `/cleanup` - Очистить временное хранилище (для отладки)
 • `/check_startup` - Проверить проекты на старте бота (только для админа)
+• `/renewals` - Показать историю операций продления (домены, подписки, сервисы)
+• `/cleanup_renewals` - Очистить старые записи о продлениях (только для админа)
 
 **Как использовать:**
 
@@ -2956,6 +2990,13 @@ async def help_command(update: Update, context: CallbackContext):
 Отправьте сообщение с множественными доменами и датами:
 • "ДОМЕН\nпрогрэсс.рф\nпрогрэс.рф\nпро-гресс.рф\nжкпрогресс.рф\nprogres82.ru\n\nИСТЕКАЕТ\n30.03.2025\n30.03.2025\n30.03.2025\n30.03.2025\n27.04.2025\n\nпроект ВЛАДОГРАД"
 • Или просто список доменов и дат без заголовков
+
+**1.3. 🔄 Команды продления:**
+Отправьте команду продления для доменов и сервисов:
+• "прогрэсс.рф - продли на год"
+• "домен1.рф, домен2.ru - продли на 3 месяца"
+• "Netflix, Spotify - продли на месяц"
+• "• прогрэсс.рф - истек 141 дн. назад\n• прогрэс.рф - истек 141 дн. назад\nпродли на год"
 
 **2. 🏢 Проекты и заказчики:**
 Укажите название проекта в начале сообщения:
@@ -2984,14 +3025,30 @@ async def help_command(update: Update, context: CallbackContext):
 • Валидирует данные
 • Предлагает сохранить в базу
 
-**6. 🔔 Автоматические уведомления:**
+**6. 🔄 Умное продление:**
+Бот автоматически:
+• Распознает команды продления для любых сервисов
+• Извлекает названия доменов, подписок, облачных сервисов
+• Определяет период продления (год, месяц, квартал)
+• Обновляет даты в базе данных
+• Логирует все операции в Supabase
+
+**7. 🔔 Автоматические уведомления:**
 Система отслеживает:
 • За месяц до окончания
 • За 2 недели
 • За 1 неделю
 • Ежедневно за 5 дней
 
-**7. 💰 Управление стоимостью:**
+**8. 🔄 Система продления:**
+• AI-парсинг команд продления через Groq (домены, подписки, облачные сервисы)
+• Автоматическое обновление дат в базе данных
+• Сохранение всех операций в Supabase
+• История продлений с детальной статистикой
+• Отслеживание статусов операций (pending, completed, failed, cancelled)
+• Поддержка всех типов сервисов, не только доменов
+
+**9. 💰 Управление стоимостью:**
 • Автоматическое извлечение стоимости из сообщений
 • Отображение стоимости в уведомлениях
 • Команда `/update_cost` для обновления стоимости
@@ -3008,6 +3065,7 @@ async def help_command(update: Update, context: CallbackContext):
 • 🤖 Groq AI для умного парсинга
 • 👁️ Vision AI для распознавания скриншотов
 • 🌐 Мульти-доменный парсер для обработки множественных доменов
+• 🔄 AI-парсинг команд продления с интеграцией Supabase (домены, подписки, сервисы)
 • 📊 Supabase для хранения данных
 • ⏰ Автоматические уведомления
 • 💰 Отслеживание стоимости сервисов
@@ -3017,6 +3075,14 @@ async def help_command(update: Update, context: CallbackContext):
 **Поддержка:**
 При возникновении проблем используйте `/test_groq` для проверки API.
 Используйте `/cleanup` если возникают проблемы с кнопками.
+Используйте `/test_renewals` для проверки системы продлений и интеграции с Supabase.
+
+**📊 Мониторинг продлений:**
+• `/renewals` - просмотр истории всех операций продления
+• Все операции автоматически сохраняются в Supabase
+• Отслеживание успешных и неуспешных операций
+• Детальная статистика по каждому продлению
+• Поддержка доменов, подписок, облачных сервисов и других типов сервисов
 """
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -3635,6 +3701,32 @@ async def handle_all_callbacks(update: Update, context: CallbackContext):
         elif query.data == "cancel_extension":
             # Обработка отмены продления доменов
             print(f"🔍 DEBUG: Обработка отмены продления")
+            
+            # Пытаемся найти данные продления в хранилище
+            # Для этого нужно найти callback_id в сообщении
+            try:
+                # Ищем в тексте сообщения информацию о callback_id
+                message_text = query.message.text
+                if "extension_" in message_text:
+                    # Извлекаем callback_id из кнопок
+                    for callback_id, data in callback_data_storage.items():
+                        if data.get('type') == 'extension_command':
+                            # Обновляем статус в Supabase на "cancelled"
+                            if 'supabase_renewal_id' in data:
+                                await update_domain_renewal_status(
+                                    data['supabase_renewal_id'], 
+                                    "cancelled", 
+                                    {"error": "Пользователь отменил операцию"}
+                                )
+                                print(f"✅ Статус продления обновлен в Supabase на 'cancelled'")
+                            
+                            # Очищаем данные из хранилища
+                            if callback_id in callback_data_storage:
+                                del callback_data_storage[callback_id]
+                            break
+            except Exception as e:
+                print(f"⚠️ Не удалось обновить статус в Supabase при отмене: {e}")
+            
             await query.edit_message_text("❌ Продление доменов отменено.")
         else:
             # Обработка всех остальных callback запросов
@@ -3706,6 +3798,9 @@ async def main():
     application.add_handler(CommandHandler("projects", select_project_command)) # Добавляем команду для выбора проекта
     application.add_handler(CommandHandler("providers", providers_command)) # Добавляем команду для просмотра провайдеров
     application.add_handler(CommandHandler("check_startup", check_startup_command)) # Добавляем команду для проверки проектов на старте
+    application.add_handler(CommandHandler("renewals", renewals_history_command)) # Добавляем команду для просмотра истории продлений
+    application.add_handler(CommandHandler("cleanup_renewals", cleanup_renewals_command)) # Добавляем команду для очистки старых записей о продлениях
+    application.add_handler(CommandHandler("test_renewals", test_renewals_command)) # Добавляем команду для тестирования системы продлений
     application.add_handler(CallbackQueryHandler(handle_all_callbacks)) # Унифицированный обработчик всех callback запросов
     
     print("Бот запущен с планировщиком уведомлений")
@@ -4182,6 +4277,13 @@ async def process_extension_command(text: str, user_id: int) -> dict:
 
 Твоя задача - извлечь из текста информацию о доменах/сервисах и периоде продления.
 
+**ВАЖНО: Это не только для доменов! Система работает со всеми типами сервисов:**
+- Домены (прогрэсс.рф, example.com)
+- Подписки (Netflix, Spotify, GitHub Pro)
+- Облачные сервисы (AWS, Google Cloud, Azure)
+- Хостинг-услуги (VPS, хостинг сайтов)
+- Другие сервисы с периодической оплатой
+
 **Формат ответа (строго JSON без markdown):**
 {{
     "type": "extension_command",
@@ -4198,8 +4300,9 @@ async def process_extension_command(text: str, user_id: int) -> dict:
 
 1. **Домены/сервисы:**
    - Ищи строки, содержащие точки (например, "миндаль.рус", "kvartal-mindal.ru")
-   - Ищи названия сервисов без точек
+   - Ищи названия сервисов без точек (например, "Netflix", "GitHub Pro", "AWS")
    - Разделяй по запятым, точкам с запятой, переносам строк
+   - **ВАЖНО: Не ограничивайся только доменами!**
 
 2. **Период продления:**
    - "год", "на год", "1 год" → 365 дней, 12 месяцев
@@ -4212,6 +4315,8 @@ async def process_extension_command(text: str, user_id: int) -> dict:
    - Один домен: "прогрэсс.рф - продли на год"
    - Несколько доменов: "домен1.рф, домен2.ru - продли на 3 месяца"
    - С переносами: "домен1.рф\nдомен2.ru\n- продли на год"
+   - Сервисы: "Netflix, Spotify - продли на месяц"
+   - Смешанные: "прогрэсс.рф, GitHub Pro, AWS - продли на год"
 
 **КРИТИЧНО ВАЖНО:** 
 - Возвращай ТОЛЬКО валидный JSON без markdown разметки
@@ -4254,11 +4359,25 @@ async def process_extension_command(text: str, user_id: int) -> dict:
             try:
                 # Очищаем ответ от возможных лишних символов
                 cleaned_content = content.strip()
+                
+                # Убираем markdown блоки
                 if cleaned_content.startswith("```json"):
                     cleaned_content = cleaned_content[7:]
+                elif cleaned_content.startswith("```"):
+                    cleaned_content = cleaned_content[3:]
                 if cleaned_content.endswith("```"):
                     cleaned_content = cleaned_content[:-3]
+                
                 cleaned_content = cleaned_content.strip()
+                
+                # Убираем возможные лишние символы в начале и конце
+                cleaned_content = re.sub(r'^[^{]*', '', cleaned_content)
+                cleaned_content = re.sub(r'[^}]*$', '', cleaned_content)
+                
+                # Пытаемся найти JSON объект с помощью regex
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned_content, re.DOTALL)
+                if json_match:
+                    cleaned_content = json_match.group(0)
                 
                 parsed_result = json.loads(cleaned_content)
                 
@@ -4268,6 +4387,7 @@ async def process_extension_command(text: str, user_id: int) -> dict:
                     parsed_result["user_id"] = user_id
                     parsed_result["total_domains"] = len(parsed_result["domains"])
                     parsed_result["command_text"] = text
+                    parsed_result["raw_groq_response"] = content  # Сохраняем сырой ответ
                     
                     print(f"🔍 DEBUG: [GROQ AI Extension] Успешно обработана команда продления")
                     print(f"🔍 DEBUG: [GROQ AI Extension] Домены: {parsed_result['domains']}")
@@ -4282,21 +4402,25 @@ async def process_extension_command(text: str, user_id: int) -> dict:
                 print(f"🔍 DEBUG: [GROQ AI Extension] Сырой ответ: {content}")
                 
                 # Пытаемся извлечь JSON из ответа с помощью regex
-                import re
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
                 if json_match:
                     try:
                         fallback_json = json_match.group(0)
+                        # Дополнительная очистка JSON
+                        fallback_json = re.sub(r'[^\x20-\x7E]', '', fallback_json)  # Убираем непечатаемые символы
                         parsed_result = json.loads(fallback_json)
                         
                         if "domains" in parsed_result and "extension_period" in parsed_result:
                             parsed_result["user_id"] = user_id
                             parsed_result["total_domains"] = len(parsed_result["domains"])
                             parsed_result["command_text"] = text
+                            parsed_result["raw_groq_response"] = content  # Сохраняем сырой ответ
                             
                             print(f"🔍 DEBUG: [GROQ AI Extension] Успешно обработана команда через fallback")
                             return parsed_result
-                    except:
+                    except Exception as fallback_error:
+                        print(f"🔍 DEBUG: [GROQ AI Extension] Fallback JSON parsing failed: {fallback_error}")
+                        print(f"🔍 DEBUG: [GROQ AI Extension] Fallback JSON content: {fallback_json}")
                         pass
                 
                 return {"error": f"Ошибка парсинга ответа от Groq AI: {str(e)}", "raw_response": content}
@@ -4317,16 +4441,356 @@ async def process_extension_command(text: str, user_id: int) -> dict:
         
         return {"error": f"Ошибка при обработке команды продления через Groq AI: {str(e)}"}
 
+# Функция для сохранения данных продления в Supabase
+async def store_domain_renewal_in_supabase(extension_data: dict) -> dict:
+    """Сохраняет данные продления доменов в таблицу domain_renewals"""
+    
+    try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            return {"error": "Supabase не настроен"}
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Подготавливаем данные для вставки
+        renewal_data = {
+            "user_id": extension_data.get("user_id"),
+            "command_text": extension_data.get("command_text", ""),
+            "domains": extension_data.get("domains", []),
+            "extension_period": extension_data.get("extension_period", "1 year"),
+            "extension_days": extension_data.get("extension_days", 365),
+            "extension_months": extension_data.get("extension_months", 12),
+            "parsing_method": extension_data.get("parsing_method", "groq_ai_extension"),
+            "total_domains": extension_data.get("total_domains", 0),
+            "status": "pending",
+            "raw_groq_response": extension_data.get("raw_response", "") or extension_data.get("raw_groq_response", "")
+        }
+        
+        # Вставляем данные в таблицу
+        response = supabase.table("domain_renewals").insert(renewal_data).execute()
+        
+        if response.data:
+            renewal_id = response.data[0]['id']
+            print(f"✅ Данные продления сохранены в Supabase с ID: {renewal_id}")
+            return {"success": True, "renewal_id": renewal_id}
+        else:
+            return {"error": "Не удалось сохранить данные продления"}
+            
+    except Exception as e:
+        print(f"❌ Ошибка при сохранении данных продления в Supabase: {e}")
+        return {"error": f"Ошибка при сохранении в Supabase: {str(e)}"}
+
+# Команда для тестирования системы продлений
+async def test_renewals_command(update: Update, context: CallbackContext):
+    """Тестирует систему продлений и интеграцию с Supabase"""
+    
+    user_id = update.message.from_user.id
+    
+    try:
+        await update.message.reply_text("🧪 Тестирую систему продлений...")
+        
+        # Тест 1: Проверка подключения к Supabase
+        await update.message.reply_text("🔍 Тест 1: Проверка подключения к Supabase...")
+        
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            await update.message.reply_text("❌ Тест 1 ПРОВАЛЕН: Supabase не настроен")
+            return
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Тест 2: Проверка существования таблицы domain_renewals
+        await update.message.reply_text("🔍 Тест 2: Проверка таблицы domain_renewals...")
+        
+        try:
+            response = supabase.table("domain_renewals").select("id", count="exact").limit(1).execute()
+            await update.message.reply_text("✅ Тест 2 ПРОЙДЕН: Таблица domain_renewals существует")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Тест 2 ПРОВАЛЕН: {str(e)}")
+            return
+        
+        # Тест 3: Тестирование функции process_extension_command
+        await update.message.reply_text("🔍 Тест 3: Тестирование AI-парсинга команд продления...")
+        
+        test_command = "прогрэсс.рф - продли на год"
+        extension_data = await process_extension_command(test_command, user_id)
+        
+        if "error" in extension_data:
+            await update.message.reply_text(f"❌ Тест 3 ПРОВАЛЕН: {extension_data['error']}")
+        else:
+            await update.message.reply_text(
+                f"✅ Тест 3 ПРОЙДЕН:\n"
+                f"• Домены: {extension_data.get('domains', [])}\n"
+                f"• Период: {extension_data.get('extension_period', 'N/A')}\n"
+                f"• Метод: {extension_data.get('parsing_method', 'N/A')}"
+            )
+        
+        # Тест 4: Тестирование сохранения в Supabase
+        await update.message.reply_text("🔍 Тест 4: Тестирование сохранения в Supabase...")
+        
+        if "error" not in extension_data:
+            store_result = await store_domain_renewal_in_supabase(extension_data)
+            
+            if "success" in store_result:
+                renewal_id = store_result.get("renewal_id")
+                await update.message.reply_text(f"✅ Тест 4 ПРОЙДЕН: Данные сохранены с ID {renewal_id}")
+                
+                # Тест 5: Тестирование обновления статуса
+                await update.message.reply_text("🔍 Тест 5: Тестирование обновления статуса...")
+                
+                update_result = await update_domain_renewal_status(renewal_id, "completed", {
+                    "extended_count": 1,
+                    "not_found_count": 0,
+                    "new_expires_at": "2026-01-18"
+                })
+                
+                if "success" in update_result:
+                    await update.message.reply_text("✅ Тест 5 ПРОЙДЕН: Статус обновлен")
+                else:
+                    await update.message.reply_text(f"❌ Тест 5 ПРОВАЛЕН: {update_result.get('error', 'Unknown error')}")
+                
+                # Тест 6: Тестирование получения истории
+                await update.message.reply_text("🔍 Тест 6: Тестирование получения истории...")
+                
+                history_result = await get_domain_renewals_history(user_id, limit=5)
+                
+                if "success" in history_result:
+                    renewals_count = len(history_result.get("renewals", []))
+                    await update.message.reply_text(f"✅ Тест 6 ПРОЙДЕН: Получено {renewals_count} записей")
+                else:
+                    await update.message.reply_text(f"❌ Тест 6 ПРОВАЛЕН: {history_result.get('error', 'Unknown error')}")
+                
+            else:
+                await update.message.reply_text(f"❌ Тест 4 ПРОВАЛЕН: {store_result.get('error', 'Unknown error')}")
+        
+        await update.message.reply_text(
+            "🎉 Тестирование системы продлений завершено!\n\n"
+            "Используйте команду /renewals для просмотра истории продлений."
+        )
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при тестировании: {str(e)}")
+
+# Команда для очистки старых записей о продлениях
+async def cleanup_renewals_command(update: Update, context: CallbackContext):
+    """Очищает старые записи о продлениях (старше 30 дней)"""
+    
+    user_id = update.message.from_user.id
+    
+    # Проверяем, является ли пользователь администратором
+    if user_id != ADMIN_ID:
+        await update.message.reply_text(
+            "❌ У вас нет прав для выполнения этой команды.\n"
+            "Только администратор может очищать историю продлений."
+        )
+        return
+    
+    try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            await update.message.reply_text("❌ Supabase не настроен")
+            return
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Удаляем записи старше 30 дней
+        cutoff_date = (get_current_datetime() - timedelta(days=30)).strftime("%Y-%m-%d")
+        
+        # Сначала получаем количество записей для удаления
+        count_response = supabase.table("domain_renewals").select("id", count="exact").lt("created_at", cutoff_date).execute()
+        records_to_delete = count_response.count if count_response.count is not None else 0
+        
+        if records_to_delete == 0:
+            await update.message.reply_text(
+                "✅ Нет записей для удаления.\n"
+                "Все записи о продлениях новее 30 дней."
+            )
+            return
+        
+        # Удаляем старые записи
+        delete_response = supabase.table("domain_renewals").delete().lt("created_at", cutoff_date).execute()
+        
+        if delete_response.data is not None:
+            await update.message.reply_text(
+                f"✅ Удалено {records_to_delete} старых записей о продлениях.\n"
+                f"Удалены записи старше {cutoff_date}"
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ Удаление выполнено, но не удалось получить подтверждение.\n"
+                f"Попробуйте использовать команду /renewals для проверки."
+            )
+        
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Ошибка при очистке записей о продлениях: {str(e)}"
+        )
+
+# Команда для просмотра истории продлений
+async def renewals_history_command(update: Update, context: CallbackContext):
+    """Показывает историю операций продления"""
+    
+    user_id = update.message.from_user.id
+    
+    try:
+        # Получаем историю продлений
+        history_result = await get_domain_renewals_history(user_id, limit=20)
+        
+        if "error" in history_result:
+            await update.message.reply_text(
+                f"❌ Ошибка при получении истории продлений: {history_result['error']}"
+            )
+            return
+        
+        renewals = history_result.get("renewals", [])
+        
+        if not renewals:
+            await update.message.reply_text(
+                "📋 История продлений пуста.\n\n"
+                "Используйте команды продления для создания записей:\n"
+                "• прогрэсс.рф - продли на год\n"
+                "• домен1.рф, домен2.ru - продли на 3 месяца"
+            )
+            return
+        
+        # Формируем сообщение с историей
+        message = f"📋 *История продлений*\n\n"
+        message += f"🔍 **Найдено записей:** {len(renewals)}\n\n"
+        
+        for i, renewal in enumerate(renewals[:10], 1):  # Показываем первые 10
+            status_emoji = {
+                "pending": "⏳",
+                "completed": "✅",
+                "failed": "❌",
+                "cancelled": "🚫"
+            }.get(renewal.get("status", "unknown"), "❓")
+            
+            created_at = renewal.get("created_at", "")
+            if created_at:
+                try:
+                    # Парсим дату и форматируем
+                    dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    created_str = dt.strftime("%d.%m.%Y %H:%M")
+                except:
+                    created_str = created_at[:10]
+            else:
+                created_str = "N/A"
+            
+            domains_count = len(renewal.get("domains", []))
+            extension_period = renewal.get("extension_period", "N/A")
+            
+            message += f"{i}. {status_emoji} **{renewal.get('status', 'unknown')}**\n"
+            message += f"   📅 {created_str} | 🌐 {domains_count} доменов\n"
+            message += f"   ⏰ {extension_period}\n"
+            
+            if renewal.get("extended_count"):
+                message += f"   ✅ Продлено: {renewal['extended_count']}\n"
+            if renewal.get("not_found_count"):
+                message += f"   ⚠️ Не найдено: {renewal['not_found_count']}\n"
+            
+            message += "\n"
+        
+        if len(renewals) > 10:
+            message += f"... и еще {len(renewals) - 10} записей\n\n"
+        
+        message += "💡 **Статусы:**\n"
+        message += "⏳ pending - ожидает обработки\n"
+        message += "✅ completed - успешно выполнено\n"
+        message += "❌ failed - ошибка выполнения\n"
+        message += "🚫 cancelled - отменено пользователем\n"
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Ошибка при получении истории продлений: {str(e)}"
+        )
+
+# Функция для получения истории продлений из Supabase
+async def get_domain_renewals_history(user_id: int = None, limit: int = 10) -> dict:
+    """Получает историю операций продления из Supabase"""
+    
+    try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            return {"error": "Supabase не настроен"}
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        # Формируем запрос
+        query = supabase.table("domain_renewals").select("*").order("created_at", desc=True).limit(limit)
+        
+        # Если указан user_id, фильтруем по пользователю
+        if user_id:
+            query = query.eq("user_id", user_id)
+        
+        response = query.execute()
+        
+        if response.data:
+            print(f"✅ Получено {len(response.data)} записей о продлениях из Supabase")
+            return {"success": True, "renewals": response.data}
+        else:
+            return {"success": True, "renewals": []}
+            
+    except Exception as e:
+        print(f"❌ Ошибка при получении истории продлений из Supabase: {e}")
+        return {"error": f"Ошибка при получении истории: {str(e)}"}
+
+# Функция для обновления статуса продления в Supabase
+async def update_domain_renewal_status(renewal_id: int, status: str, result: dict = None):
+    """Обновляет статус операции продления в Supabase"""
+    
+    try:
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            return {"error": "Supabase не настроен"}
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        update_data = {
+            "status": status,
+            "processed_at": get_current_datetime_iso()
+        }
+        
+        if result:
+            if "error" in result:
+                update_data["error_message"] = result["error"]
+                update_data["status"] = "failed"
+            else:
+                update_data["extended_count"] = result.get("extended_count", 0)
+                update_data["not_found_count"] = result.get("not_found_count", 0)
+                update_data["new_expires_at"] = result.get("new_expires_at")
+                update_data["status"] = "completed"
+        
+        # Обновляем запись
+        response = supabase.table("domain_renewals").update(update_data).eq("id", renewal_id).execute()
+        
+        if response.data:
+            print(f"✅ Статус продления обновлен в Supabase: {status}")
+            return {"success": True}
+        else:
+            return {"error": "Не удалось обновить статус продления"}
+            
+    except Exception as e:
+        print(f"❌ Ошибка при обновлении статуса продления в Supabase: {e}")
+        return {"error": f"Ошибка при обновлении статуса: {str(e)}"}
+
 # Fallback парсер для команд продления
 def parse_extension_fallback(text: str, user_id: int) -> dict:
     """Простой парсер для команд продления без использования AI"""
     
     try:
-        # Извлекаем домены (строки с точками)
+        # Извлекаем домены и сервисы
         import re
+        
+        # Ищем домены (строки с точками)
         domains = re.findall(r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
         
-        if not domains:
+        # Ищем названия сервисов (слова с заглавными буквами, которые могут быть сервисами)
+        services = re.findall(r'\b[A-Z][a-zA-Z0-9\s]*(?:Pro|Premium|Plus|Cloud|Hosting|VPS|DNS|SSL)\b', text)
+        
+        # Ищем простые названия сервисов (Netflix, Spotify, AWS, etc.)
+        simple_services = re.findall(r'\b(?:Netflix|Spotify|GitHub|AWS|Azure|Google|Cloudflare|DigitalOcean|Vultr|Linode|OVH|Reg\.ru|nic\.ru)\b', text, re.IGNORECASE)
+        
+        # Объединяем все найденные сервисы
+        all_services = domains + services + simple_services
+        
+        if not all_services:
             return None
         
         # Определяем период продления
@@ -4353,23 +4817,24 @@ def parse_extension_fallback(text: str, user_id: int) -> dict:
         
         return {
             "type": "extension_command",
-            "domains": domains,
+            "domains": all_services,
             "extension_period": extension_period,
             "extension_days": extension_days,
             "extension_months": extension_months,
             "parsing_method": "fallback_parser",
-            "total_domains": len(domains),
+            "total_domains": len(all_services),
             "command_text": text,
-            "user_id": user_id
+            "user_id": user_id,
+            "raw_groq_response": "Использован fallback парсер (без Groq AI)"
         }
         
     except Exception as e:
         print(f"🔍 DEBUG: [Fallback Parser] Ошибка: {e}")
         return None
 
-# Функция для продления доменов на основе команды
+# Функция для продления сервисов на основе команды
 async def extend_domains_from_command(extension_data: dict) -> dict:
-    """Продлевает домены на основе данных от ИИ"""
+    """Продлевает сервисы (домены и другие сервисы) на основе данных от ИИ"""
     
     try:
         domains = extension_data.get("domains", [])
@@ -4378,18 +4843,24 @@ async def extend_domains_from_command(extension_data: dict) -> dict:
         user_id = extension_data.get("user_id")
         
         if not domains:
-            return {"error": "Не указаны домены для продления"}
+            return {"error": "Не указаны сервисы для продления"}
         
         # Рассчитываем новую дату окончания
         new_expires_at = (get_current_datetime() + timedelta(days=extension_days)).strftime("%Y-%m-%d")
         
-        # Ищем домены в базе данных
+        # Ищем сервисы в базе данных
         extended_count = 0
-        not_found_domains = []
+        not_found_services = []
         
-        for domain in domains:
-            # Ищем сервис по названию (домену)
-            response = supabase.table("digital_notificator_services").select("*").eq("name", domain).execute()
+        # Инициализируем Supabase клиент
+        if not SUPABASE_URL or not SUPABASE_KEY:
+            return {"error": "Supabase не настроен"}
+        
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        
+        for service_name in domains:
+            # Ищем сервис по названию (домену или названию сервиса)
+            response = supabase.table("digital_notificator_services").select("*").eq("name", service_name).execute()
             
             if response.data:
                 service = response.data[0]
@@ -4405,28 +4876,27 @@ async def extend_domains_from_command(extension_data: dict) -> dict:
                 }).eq("id", service_id).execute()
                 
                 extended_count += 1
-                print(f"✅ Продлен домен {domain} с {old_expires_at} до {new_expires_at}")
+                print(f"✅ Продлен сервис {service_name} с {old_expires_at} до {new_expires_at}")
             else:
-                not_found_domains.append(domain)
-                print(f"⚠️ Домен {domain} не найден в базе данных")
+                not_found_services.append(service_name)
+                print(f"⚠️ Сервис {service_name} не найден в базе данных")
         
         # Формируем результат
         result = {
             "success": True,
             "extended_count": extended_count,
-            "not_found_count": len(not_found_domains),
+            "not_found_count": len(not_found_services),
             "new_expires_at": new_expires_at,
             "extension_period": extension_data.get("extension_period", "1 year"),
-            "total_domains": len(domains)
+            "total_domains": len(domains),
+            "processed_domains": domains,
+            "not_found_domains": not_found_services if not_found_services else []
         }
-        
-        if not_found_domains:
-            result["not_found_domains"] = not_found_domains
         
         return result
         
     except Exception as e:
-        return {"error": f"Ошибка при продлении доменов: {str(e)}"}
+        return {"error": f"Ошибка при продлении сервисов: {str(e)}"}
 
 # Функция для обработки подтверждения продления доменов
 async def handle_extension_confirmation(update: Update, context: CallbackContext):
@@ -4451,28 +4921,56 @@ async def handle_extension_confirmation(update: Update, context: CallbackContext
         # Показываем индикатор "печатает..."
         await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
         
+        # Получаем ID записи из Supabase (если был сохранен ранее)
+        renewal_id = extension_data.get('supabase_renewal_id')
+        
+        if not renewal_id:
+            print("⚠️ ID записи в Supabase не найден, попробуем создать новую...")
+            # Пытаемся создать новую запись в Supabase
+            store_result = await store_domain_renewal_in_supabase(extension_data)
+            if "success" in store_result:
+                renewal_id = store_result.get("renewal_id")
+                print(f"✅ Создана новая запись в Supabase с ID: {renewal_id}")
+            else:
+                print(f"⚠️ Предупреждение: не удалось создать запись в Supabase: {store_result.get('error', 'Unknown error')}")
+        
+        if renewal_id:
+            print(f"💾 Используем существующую запись в Supabase с ID: {renewal_id}")
+        
         # Продлеваем домены
         result = await extend_domains_from_command(extension_data)
         
         if "error" in result:
+            # Обновляем статус в Supabase на "failed"
+            if renewal_id:
+                await update_domain_renewal_status(renewal_id, "failed", result)
+            
             await query.edit_message_text(
                 f"❌ Ошибка при продлении доменов: {result['error']}"
             )
             return
         
+        # Обновляем статус в Supabase на "completed"
+        if renewal_id:
+            await update_domain_renewal_status(renewal_id, "completed", result)
+        
         # Формируем сообщение об успешном продлении
-        message = f"✅ *Домены успешно продлены!*\n\n"
-        message += f"📊 **Обработано доменов:** {result['total_domains']}\n"
+        message = f"✅ *Сервисы успешно продлены!*\n\n"
+        message += f"📊 **Обработано сервисов:** {result['total_domains']}\n"
         message += f"✅ **Продлено:** {result['extended_count']}\n"
         message += f"⚠️ **Не найдено:** {result['not_found_count']}\n"
         message += f"📅 **Новая дата окончания:** {result['new_expires_at']}\n"
         message += f"⏰ **Период продления:** {result['extension_period']}\n"
         
         if result.get('not_found_domains'):
-            message += f"\n❌ **Домены не найдены в базе:**\n"
-            for domain in result['not_found_domains']:
-                message += f"• {domain}\n"
+            message += f"\n❌ **Сервисы не найдены в базе:**\n"
+            for service in result['not_found_domains']:
+                message += f"• {service}\n"
             message += f"\n💡 Добавьте их в базу данных через команду /add"
+        
+        # Добавляем информацию о сохранении в Supabase
+        if renewal_id:
+            message += f"\n💾 **Данные сохранены в Supabase** (ID: {renewal_id})"
         
         # Очищаем данные из хранилища
         if callback_id in callback_data_storage:
