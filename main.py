@@ -938,22 +938,33 @@ async def process_text_with_groq(text: str, task_type: str = "parse_service") ->
 async def smart_parse_service_message(text: str, user_id: int) -> dict:
     """Умно парсит сообщение о сервисе через Groq"""
     
+    print(f"🔍 DEBUG: [smart_parse_service_message] Начинаем обработку текста: {text[:100]}...")
+    
     # Сначала проверяем, не является ли это сообщением о деньгах/бюджете
     money_date_data = parse_money_and_days_message(text)
     if money_date_data:
+        print(f"🔍 DEBUG: [smart_parse_service_message] Найден бюджет, возвращаем: {money_date_data}")
         return money_date_data
+    
+    print(f"🔍 DEBUG: [smart_parse_service_message] Бюджет не найден, проверяем специальные сервисы")
     
     # Затем проверяем специальные случаи (хостинг, домены и т.д.)
     special_service_data = parse_special_service_message(text, user_id)
     if special_service_data:
+        print(f"🔍 DEBUG: [smart_parse_service_message] Найден специальный сервис, возвращаем: {special_service_data}")
         return special_service_data
+    
+    print(f"🔍 DEBUG: [smart_parse_service_message] Специальный сервис не найден, используем Groq AI")
     
     # Если это не специальный случай, используем обычный парсинг через Groq
     parsed_data = await process_text_with_groq(text, "parse_service")
     
     if "error" in parsed_data:
+        print(f"🔍 DEBUG: [smart_parse_service_message] Groq вернул ошибку, используем простой парсинг")
         # Если Groq не сработал, используем простой парсинг
         return simple_parse_service_message(text, user_id)
+    
+    print(f"🔍 DEBUG: [smart_parse_service_message] Groq успешно обработал, дополняем данные")
     
     # Дополняем данные
     if "user_id" not in parsed_data or not parsed_data["user_id"]:
@@ -975,32 +986,47 @@ async def smart_parse_service_message(text: str, user_id: int) -> dict:
         parsed_data["validation_errors"] = validation.get("errors", [])
         parsed_data["suggestions"] = validation.get("suggestions", [])
     
+    print(f"🔍 DEBUG: [smart_parse_service_message] Финальный результат: {parsed_data}")
     return parsed_data
 
 def parse_special_service_message(text: str, user_id: int) -> dict:
     """Парсит специальные типы сервисов (хостинг, домены и т.д.)"""
     
+    print(f"🔍 DEBUG: Проверяем специальные сервисы для текста: {text[:100]}...")
+    
     # Специальная обработка для хостинга с указанием года
     hosting_pattern = r'хостинг\s*\n*\s*([\d\s,]+)\s*₽\s*год'
     hosting_match = re.search(hosting_pattern, text, re.IGNORECASE)
     
+    print(f"🔍 DEBUG: Паттерн хостинга: {hosting_pattern}")
+    print(f"🔍 DEBUG: Результат поиска хостинга: {hosting_match}")
+    
     if hosting_match:
         try:
+            print(f"🔍 DEBUG: Найден хостинг! Обрабатываем...")
+            
             # Извлекаем стоимость хостинга
             cost_str = hosting_match.group(1).replace(' ', '').replace(',', '.')
             cost = float(cost_str)
+            print(f"🔍 DEBUG: Стоимость хостинга: {cost}")
             
             # Ищем количество дней
             days_pattern = r'на\s+(\d+)\s+дн[ея]'
             days_match = re.search(days_pattern, text)
+            print(f"🔍 DEBUG: Поиск дней: {days_match}")
             
             if days_match:
                 days = int(days_match.group(1))
+                print(f"🔍 DEBUG: Найдено дней: {days}")
                 # Рассчитываем дату окончания от текущей даты
                 current_date = get_current_datetime()
                 end_date = current_date + timedelta(days=days)
                 expires_at = end_date.strftime("%Y-%m-%d")
+                print(f"🔍 DEBUG: Текущая дата: {current_date}")
+                print(f"🔍 DEBUG: Дата окончания: {end_date}")
+                print(f"🔍 DEBUG: Форматированная дата: {expires_at}")
             else:
+                print(f"🔍 DEBUG: Дни не найдены, используем год")
                 # Если дни не указаны, используем год от текущей даты
                 current_date = get_current_datetime()
                 end_date = current_date + timedelta(days=365)
@@ -1009,8 +1035,9 @@ def parse_special_service_message(text: str, user_id: int) -> dict:
             # Ищем название проекта в первой строке
             lines = text.strip().split('\n')
             project = lines[0].strip() if lines else None
+            print(f"🔍 DEBUG: Проект: {project}")
             
-            return {
+            result = {
                 "name": "Хостинг",
                 "expires_at": expires_at,
                 "user_id": user_id,
@@ -1020,9 +1047,14 @@ def parse_special_service_message(text: str, user_id: int) -> dict:
                 "provider": "Хостинг-провайдер",
                 "parsing_method": "special_hosting"
             }
+            
+            print(f"🔍 DEBUG: Результат парсинга хостинга: {result}")
+            return result
+            
         except (ValueError, TypeError) as e:
-            print(f"Ошибка при парсинге хостинга: {e}")
+            print(f"❌ DEBUG: Ошибка при парсинге хостинга: {e}")
     
+    print(f"🔍 DEBUG: Хостинг не найден, возвращаем None")
     # Если не хостинг, возвращаем None для передачи в Groq
     return None
 
