@@ -2347,8 +2347,12 @@ async def handle_text_message(update: Update, context: CallbackContext):
     if text.startswith('/'):
         return
     
-    # Проверяем, является ли это командой продления
-    if any(keyword in text.lower() for keyword in ['продли', 'продлить', 'продление']):
+    # Проверяем, является ли это командой продления (но не добавления!)
+    # Сначала проверяем, не хочет ли пользователь добавить что-то
+    if any(keyword in text.lower() for keyword in ['добавь', 'добавить', 'добавляй']):
+        # Это команда добавления, обрабатываем через обычный парсинг
+        pass
+    elif any(keyword in text.lower() for keyword in ['продли', 'продлить', 'продление']):
         await context.bot.send_chat_action(chat_id=update.message.chat.id, action="typing")
         
         try:
