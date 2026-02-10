@@ -6,8 +6,10 @@ import ctypes
 import logging
 import traceback
 import time
+import json
 import threading
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from functools import wraps
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext, CallbackQueryHandler
@@ -39,7 +41,7 @@ def check_single_instance():
             mutex_name = "Global\\TelegramBotMutex_" + os.path.basename(__file__)
             mutex = ctypes.windll.kernel32.CreateMutexW(None, 1, mutex_name)
             if ctypes.windll.kernel32.GetLastError() == 183:
-                print("❌ Другой экземпляр бота уже запущен!")
+                logger.error("Другой экземпляр бота уже запущен!")
                 return True
         else:
             lock_file = '/tmp/telegram_bot.lock'
@@ -48,7 +50,7 @@ def check_single_instance():
                     pid = int(f.read().strip())
                 try:
                     os.kill(pid, 0)
-                    print(f"❌ Другой экземпляр бота уже запущен (PID: {pid})")
+                    logger.error(f"Другой экземпляр бота уже запущен (PID: {pid})")
                     return True
                 except OSError:
                     try:
@@ -59,7 +61,7 @@ def check_single_instance():
                 f.write(str(os.getpid()))
         return False
     except Exception as e:
-        print(f"⚠️ Не удалось проверить единственный экземпляр: {e}")
+        logger.warning(f"Не удалось проверить единственный экземпляр: {e}")
         return False
 
 # ===== Загрузка конфигурации =====
@@ -76,6 +78,46 @@ total_checks = 0
 total_notifications = 0
 bot_application = None
 scheduler_running = True
+STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stats.json')
+
+def validate_config():
+    """Проверяет конфигурацию при старте"""
+    errors = []
+    if not TELEGRAM_BOT_TOKEN:
+        errors.append("TELEGRAM_BOT_TOKEN не установлен")
+    if not SUPABASE_URL:
+        errors.append("SUPABASE_URL не установлен")
+    if not SUPABASE_KEY:
+        errors.append("SUPABASE_KEY не установлен")
+    if ADMIN_ID == 0:
+        logger.warning("⚠️ ADMIN_ID не установлен — бот не будет отправлять уведомления и команды будут недоступны!")
+    if errors:
+        for e in errors:
+            logger.critical(f"❌ {e}")
+        return False
+    return True
+
+def load_stats():
+    """Загружает статистику из файла"""
+    global total_checks, total_notifications
+    try:
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, 'r') as f:
+                data = json.load(f)
+            total_checks = data.get('total_checks', 0)
+            total_notifications = data.get('total_notifications', 0)
+            logger.info(f"Статистика загружена: проверок={total_checks}, уведомлений={total_notifications}")
+    except Exception as e:
+        logger.warning(f"Не удалось загрузить статистику: {e}")
+
+def save_stats():
+    """Сохраняет статистику в файл"""
+    try:
+        os.makedirs(os.path.dirname(STATS_FILE), exist_ok=True)
+        with open(STATS_FILE, 'w') as f:
+            json.dump({'total_checks': total_checks, 'total_notifications': total_notifications}, f)
+    except Exception as e:
+        logger.warning(f"Не удалось сохранить статистику: {e}")
 
 # ===== Supabase с автопереподключением =====
 supabase: Client = None
@@ -121,6 +163,60 @@ def db_query(func):
         raise last_error
     return wrapper
 
+@db_query
+def db_fetch_all_services():
+    """Получить все сервисы"""
+    return get_supabase().table("digital_notificator_services").select("*").execute().data or []
+
+@db_query
+def db_fetch_active_services():
+    """Получить активные сервисы"""
+    return get_supabase().table("digital_notificator_services").select("*").eq("status", "active").execute().data or []
+
+@db_query
+def db_fetch_service(sid):
+    """Получить сервис по ID"""
+    resp = get_supabase().table("digital_notificator_services").select("*").eq("id", sid).execute()
+    return resp.data[0] if resp.data else None
+
+@db_query
+def db_fetch_service_name(sid):
+    """Получить имя сервиса по ID"""
+    resp = get_supabase().table("digital_notificator_services").select("name").eq("id", sid).execute()
+    return resp.data[0]['name'] if resp.data else "Сервис"
+
+@db_query
+def db_update_service(sid, data):
+    """Обновить сервис по ID"""
+    return get_supabase().table("digital_notificator_services").update(data).eq("id", sid).execute()
+
+@db_query
+def db_bulk_update_services(ids, data):
+    """Массовое обновление сервисов по списку ID"""
+    return get_supabase().table("digital_notificator_services").update(data).in_("id", ids).execute()
+
+@db_query
+def db_fetch_projects():
+    """Получить список проектов"""
+    resp = get_supabase().table("digital_notificator_services").select("project").not_.is_("project", "null").execute()
+    return sorted(set(s.get('project') for s in (resp.data or []) if s.get('project')))
+
+@db_query
+def db_fetch_providers():
+    """Получить список провайдеров"""
+    resp = get_supabase().table("digital_notificator_services").select("provider").not_.is_("provider", "null").execute()
+    return sorted(set(s.get('provider') for s in (resp.data or []) if s.get('provider')))
+
+@db_query
+def db_fetch_by_project(project):
+    """Получить сервисы проекта"""
+    return get_supabase().table("digital_notificator_services").select("*").eq("project", project).execute().data or []
+
+@db_query
+def db_fetch_by_provider(provider):
+    """Получить сервисы провайдера"""
+    return get_supabase().table("digital_notificator_services").select("*").eq("provider", provider).execute().data or []
+
 # Инициализация при старте
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -128,9 +224,11 @@ except Exception as e:
     logger.error(f"Не удалось подключиться к Supabase при старте: {e}")
 
 # ===== Утилиты даты/времени =====
+MSK = ZoneInfo("Europe/Moscow")
+
 def get_current_datetime():
-    """Текущее время МСК (UTC+3)"""
-    return datetime.now(timezone.utc) + timedelta(hours=3)
+    """Текущее время МСК"""
+    return datetime.now(MSK)
 
 def get_current_date():
     """Текущая дата МСК"""
@@ -152,16 +250,47 @@ def parse_db_date(date_str):
         return None
 
 def update_statistics(checks_increment=0, notifications_increment=0):
-    """Обновляет статистику работы бота"""
+    """Обновляет статистику работы бота и сохраняет в файл"""
     global total_checks, total_notifications
     total_checks += checks_increment
     total_notifications += notifications_increment
+    save_stats()
 
 def esc(text):
     """Экранирует HTML спецсимволы для Telegram HTML parse_mode"""
     if not text:
         return ""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def admin_only(func):
+    """Декоратор: команда доступна только админу"""
+    @wraps(func)
+    async def wrapper(update: Update, context: CallbackContext):
+        if update.message and update.message.from_user.id != ADMIN_ID:
+            await update.message.reply_text("❌ Доступ запрещён.")
+            return
+        return await func(update, context)
+    return wrapper
+
+
+async def send_long_message(update, text, parse_mode='HTML'):
+    """Отправляет сообщение, разбивая на части если >4096 символов"""
+    if len(text) <= 4096:
+        await update.message.reply_text(text, parse_mode=parse_mode)
+        return
+    parts = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > 4000:
+            parts.append(current)
+            current = line + "\n"
+        else:
+            current += line + "\n"
+    if current:
+        parts.append(current)
+    for part in parts:
+        await update.message.reply_text(part.strip(), parse_mode=parse_mode)
 
 # ===== Уведомления о жизненном цикле бота =====
 async def send_bot_start_notification():
@@ -174,8 +303,7 @@ async def send_bot_start_notification():
         bot_start_time = get_current_datetime()
 
         try:
-            resp = get_supabase().table("digital_notificator_services").select("*").execute()
-            services = resp.data or []
+            services = db_fetch_all_services()
             total = len(services)
             active = len([s for s in services if s.get('status') == 'active'])
             notified = len([s for s in services if s.get('status') == 'notified'])
@@ -183,7 +311,7 @@ async def send_bot_start_notification():
             users = len(set(s.get('user_id') for s in services if s.get('user_id')))
             cost = sum(float(s.get('cost', 0)) for s in services if s.get('status') == 'active' and s.get('cost'))
         except Exception as e:
-            print(f"Ошибка получения статистики: {e}")
+            logger.error(f"Ошибка получения статистики: {e}")
             total = active = notified = paid = users = 0
             cost = 0
 
@@ -199,11 +327,11 @@ async def send_bot_start_notification():
 
         if bot_application:
             await bot_application.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode='HTML')
-        print("✅ Уведомление о запуске отправлено")
+        logger.info("Уведомление о запуске отправлено")
 
         await check_expiring_projects_on_startup()
     except Exception as e:
-        print(f"Ошибка уведомления о запуске: {e}")
+        logger.error(f"Ошибка уведомления о запуске: {e}")
 
 
 async def check_expiring_projects_on_startup():
@@ -212,16 +340,16 @@ async def check_expiring_projects_on_startup():
         return
 
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("status", "active").execute()
-        if not resp.data:
-            print("Нет активных сервисов")
+        active_services = db_fetch_active_services()
+        if not active_services:
+            logger.info("Нет активных сервисов")
             return
 
         today = get_current_date()
         expiring = []
         expired = []
 
-        for s in resp.data:
+        for s in active_services:
             exp_date = parse_db_date(s.get('expires_at', ''))
             if not exp_date:
                 continue
@@ -232,9 +360,9 @@ async def check_expiring_projects_on_startup():
         if expiring or expired:
             await send_startup_expiry_notification(expiring, expired)
         else:
-            print("Нет сервисов, которые скоро закончатся")
+            logger.info("Нет сервисов, которые скоро закончатся")
     except Exception as e:
-        print(f"Ошибка проверки при запуске: {e}")
+        logger.error(f"Ошибка проверки при запуске: {e}")
 
 
 async def send_startup_expiry_notification(expiring, expired):
@@ -266,9 +394,9 @@ async def send_startup_expiry_notification(expiring, expired):
 
         if bot_application:
             await bot_application.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode='HTML')
-        print(f"Startup: {len(expired)} истекших, {len(expiring)} скоро")
+        logger.info(f"Startup: {len(expired)} истекших, {len(expiring)} скоро")
     except Exception as e:
-        print(f"Ошибка startup notification: {e}")
+        logger.error(f"Ошибка startup notification: {e}")
 
 
 async def send_bot_stop_notification():
@@ -292,7 +420,7 @@ async def send_bot_stop_notification():
         if bot_application:
             await bot_application.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode='HTML')
     except Exception as e:
-        print(f"Ошибка stop notification: {e}")
+        logger.error(f"Ошибка stop notification: {e}")
 
 
 # ===== Система уведомлений =====
@@ -303,14 +431,14 @@ async def check_and_send_notifications():
 
     try:
         update_statistics(checks_increment=1)
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("status", "active").execute()
-        if not resp.data:
+        services = db_fetch_active_services()
+        if not services:
             return
 
         today = get_current_date()
         sent = 0
 
-        for service in resp.data:
+        for service in services:
             exp_date = parse_db_date(service.get('expires_at', ''))
             if not exp_date:
                 continue
@@ -339,18 +467,18 @@ async def check_and_send_notifications():
                 sent += 1
 
                 try:
-                    get_supabase().table("digital_notificator_services").update({
+                    db_update_service(service['id'], {
                         "notification_date": today.isoformat(),
                         "last_notification": notification_type
-                    }).eq("id", service['id']).execute()
+                    })
                 except Exception as e:
-                    print(f"Ошибка обновления notification_date: {e}")
+                    logger.error(f"Ошибка обновления notification_date: {e}")
 
         if sent > 0:
             update_statistics(notifications_increment=sent)
-            print(f"Отправлено {sent} уведомлений")
+            logger.info(f"Отправлено {sent} уведомлений")
     except Exception as e:
-        print(f"Ошибка check_and_send_notifications: {e}")
+        logger.error(f"Ошибка check_and_send_notifications: {e}")
 
 
 async def send_service_notification(service, notification_type, days_left):
@@ -401,9 +529,9 @@ async def send_service_notification(service, notification_type, days_left):
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='HTML'
             )
-        print(f"Уведомление: {service['name']} ({notification_type})")
+        logger.info(f"Уведомление: {service['name']} ({notification_type})")
     except Exception as e:
-        print(f"Ошибка уведомления {service.get('name', '?')}: {e}")
+        logger.error(f"Ошибка уведомления {service.get('name', '?')}: {e}")
 
 
 # ===== Обработчики callback-кнопок =====
@@ -432,10 +560,10 @@ async def handle_all_callbacks(update: Update, context: CallbackContext):
         elif data.startswith("select_provider:"):
             await _handle_select_provider(query, data)
         else:
-            print(f"Неизвестный callback: {data}")
+            logger.warning(f"Неизвестный callback: {data}")
 
     except Exception as e:
-        print(f"Ошибка callback '{query.data}': {e}")
+        logger.error(f"Ошибка callback '{query.data}': {e}")
         try:
             await query.edit_message_text(f"❌ Ошибка: {str(e)}")
         except Exception:
@@ -447,13 +575,12 @@ async def _handle_paid(query, data):
     parts = data.split(":")
     sid = parts[1]
 
-    service_resp = get_supabase().table("digital_notificator_services").select("name").eq("id", sid).execute()
-    name = service_resp.data[0]['name'] if service_resp.data else "Сервис"
+    name = db_fetch_service_name(sid)
 
-    get_supabase().table("digital_notificator_services").update({
+    db_update_service(sid, {
         "status": "paid",
         "payment_date": get_current_datetime_iso()
-    }).eq("id", sid).execute()
+    })
 
     await query.edit_message_text(
         f"💰 <b>Оплачено!</b>\n\n📋 {esc(name)}\n✅ Убран из уведомлений.",
@@ -467,14 +594,13 @@ async def _handle_notified(query, data):
     sid = parts[1]
     ntype = parts[2] if len(parts) > 2 else "manual"
 
-    service_resp = get_supabase().table("digital_notificator_services").select("name").eq("id", sid).execute()
-    name = service_resp.data[0]['name'] if service_resp.data else "Сервис"
+    name = db_fetch_service_name(sid)
 
-    get_supabase().table("digital_notificator_services").update({
+    db_update_service(sid, {
         "status": "notified",
         "last_notification": ntype,
         "notification_date": get_current_datetime_iso()
-    }).eq("id", sid).execute()
+    })
 
     await query.edit_message_text(
         f"🔔 <b>Уведомил, жду оплаты</b>\n\n📋 {esc(name)}\n✅ Статус обновлён.",
@@ -488,21 +614,23 @@ async def _handle_extend(query, data):
     sid = parts[1]
     days = int(parts[2]) if len(parts) > 2 else 365
 
-    service_resp = get_supabase().table("digital_notificator_services").select("*").eq("id", sid).execute()
-    if not service_resp.data:
+    service = db_fetch_service(sid)
+    if not service:
         await query.edit_message_text("❌ Сервис не найден.")
         return
-
-    service = service_resp.data[0]
     old_date = service.get('expires_at', '?')
-    new_date = (get_current_datetime() + timedelta(days=days)).strftime("%Y-%m-%d")
+    base_date = parse_db_date(old_date)
+    if base_date and base_date > get_current_date():
+        new_date = (base_date + timedelta(days=days)).strftime("%Y-%m-%d")
+    else:
+        new_date = (get_current_datetime() + timedelta(days=days)).strftime("%Y-%m-%d")
 
-    get_supabase().table("digital_notificator_services").update({
+    db_update_service(sid, {
         "expires_at": new_date,
         "status": "active",
         "last_notification": None,
         "notification_date": None
-    }).eq("id", sid).execute()
+    })
 
     await query.edit_message_text(
         f"📅 <b>Продлено!</b>\n\n"
@@ -517,23 +645,23 @@ async def _handle_extend(query, data):
 async def _handle_all_paid(query):
     """Кнопка 'Все оплачены' (для истекающих на старте)"""
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("status", "active").execute()
-        if not resp.data:
+        active = db_fetch_active_services()
+        if not active:
             await query.edit_message_text("✅ Нет активных сервисов.")
             return
 
         today = get_current_date()
         ids = []
-        for s in resp.data:
+        for s in active:
             exp = parse_db_date(s.get('expires_at', ''))
             if exp and (exp - today).days <= 30:
                 ids.append(s['id'])
 
         if ids:
-            get_supabase().table("digital_notificator_services").update({
+            db_bulk_update_services(ids, {
                 "status": "paid",
                 "payment_date": get_current_datetime_iso()
-            }).in_("id", ids).execute()
+            })
 
             await query.edit_message_text(
                 f"💰 <b>Все оплачены!</b>\n\n📊 Обновлено: {len(ids)} сервисов.",
@@ -548,14 +676,14 @@ async def _handle_all_paid(query):
 async def _handle_extend_all_hosting(query):
     """Кнопка 'Продлить все хостинги'"""
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("status", "active").execute()
-        if not resp.data:
+        active = db_fetch_active_services()
+        if not active:
             await query.edit_message_text("✅ Нет активных сервисов.")
             return
 
         today = get_current_date()
         ids = []
-        for s in resp.data:
+        for s in active:
             exp = parse_db_date(s.get('expires_at', ''))
             if not exp:
                 continue
@@ -571,12 +699,12 @@ async def _handle_extend_all_hosting(query):
 
         if ids:
             new_date = (get_current_datetime() + timedelta(days=365)).strftime("%Y-%m-%d")
-            get_supabase().table("digital_notificator_services").update({
+            db_bulk_update_services(ids, {
                 "expires_at": new_date,
                 "status": "active",
                 "last_notification": None,
                 "notification_date": None
-            }).in_("id", ids).execute()
+            })
 
             await query.edit_message_text(
                 f"📅 <b>Хостинги продлены!</b>\n\n📊 Продлено: {len(ids)}\n📅 До: {new_date}",
@@ -592,14 +720,14 @@ async def _handle_select_project(query, data):
     """Показать сервисы проекта"""
     project = data.split(":", 1)[1]
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("project", project).execute()
-        if not resp.data:
+        services = db_fetch_by_project(project)
+        if not services:
             await query.edit_message_text(f"📭 Нет сервисов в проекте «{project}»")
             return
 
         msg = f"🏢 <b>Проект: {esc(project)}</b>\n\n"
         total_cost = 0
-        for s in resp.data:
+        for s in services:
             emoji = {"active": "🟢", "paid": "🔵", "notified": "🟡"}.get(s.get('status'), "⚪")
             msg += f"{emoji} {esc(s['name'])} — до {esc(s.get('expires_at', '?'))}"
             if s.get('cost'):
@@ -619,13 +747,13 @@ async def _handle_select_provider(query, data):
     """Показать сервисы провайдера"""
     provider = data.split(":", 1)[1]
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("provider", provider).execute()
-        if not resp.data:
+        services = db_fetch_by_provider(provider)
+        if not services:
             await query.edit_message_text(f"📭 Нет сервисов у провайдера «{provider}»")
             return
 
         msg = f"🌐 <b>Провайдер: {esc(provider)}</b>\n\n"
-        for s in resp.data:
+        for s in services:
             emoji = {"active": "🟢", "paid": "🔵", "notified": "🟡"}.get(s.get('status'), "⚪")
             msg += f"{emoji} {esc(s['name'])}"
             if s.get('project'):
@@ -641,6 +769,7 @@ async def _handle_select_provider(query, data):
 
 
 # ===== Команды =====
+@admin_only
 async def start_command(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "👋 <b>Привет! Я бот-нотификатор.</b>\n\n"
@@ -651,6 +780,7 @@ async def start_command(update: Update, context: CallbackContext):
     )
 
 
+@admin_only
 async def help_command(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "📚 <b>Справка</b>\n\n"
@@ -674,11 +804,11 @@ async def help_command(update: Update, context: CallbackContext):
     )
 
 
+@admin_only
 async def status_command(update: Update, context: CallbackContext):
     """Статистика сервисов из БД с подробным списком"""
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").execute()
-        services = resp.data or []
+        services = db_fetch_all_services()
 
         active = [s for s in services if s.get('status') == 'active']
         notified_list = [s for s in services if s.get('status') == 'notified']
@@ -741,31 +871,16 @@ async def status_command(update: Update, context: CallbackContext):
 
         msg += f"\n📈 Проверок: {total_checks} | Уведомлений: {total_notifications}"
 
-        # Telegram ограничивает сообщения 4096 символами
-        if len(msg) > 4096:
-            parts = []
-            current = ""
-            for line in msg.split("\n"):
-                if len(current) + len(line) + 1 > 4000:
-                    parts.append(current)
-                    current = line + "\n"
-                else:
-                    current += line + "\n"
-            if current:
-                parts.append(current)
-            for part in parts:
-                await update.message.reply_text(part.strip(), parse_mode='HTML')
-        else:
-            await update.message.reply_text(msg, parse_mode='HTML')
+        await send_long_message(update, msg)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def projects_command(update: Update, context: CallbackContext):
     """Список проектов"""
     try:
-        resp = get_supabase().table("digital_notificator_services").select("project").not_.is_("project", "null").execute()
-        projects = sorted(set(s.get('project') for s in (resp.data or []) if s.get('project')))
+        projects = db_fetch_projects()
 
         if not projects:
             await update.message.reply_text("📋 Проектов нет.")
@@ -790,11 +905,11 @@ async def projects_command(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def providers_command(update: Update, context: CallbackContext):
     """Список провайдеров"""
     try:
-        resp = get_supabase().table("digital_notificator_services").select("provider").not_.is_("provider", "null").execute()
-        providers = sorted(set(s.get('provider') for s in (resp.data or []) if s.get('provider')))
+        providers = db_fetch_providers()
 
         if not providers:
             await update.message.reply_text("🌐 Провайдеров нет.")
@@ -819,15 +934,13 @@ async def providers_command(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def check_command(update: Update, context: CallbackContext):
     """Принудительная проверка истекающих с подробным выводом"""
-    if update.message.from_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Только для админа.")
-        return
 
     try:
-        resp = get_supabase().table("digital_notificator_services").select("*").eq("status", "active").execute()
-        if not resp.data:
+        active_services = db_fetch_active_services()
+        if not active_services:
             await update.message.reply_text("✅ Нет активных сервисов.")
             return
 
@@ -835,7 +948,7 @@ async def check_command(update: Update, context: CallbackContext):
         expired = []
         expiring = []
 
-        for s in resp.data:
+        for s in active_services:
             exp = parse_db_date(s.get('expires_at', ''))
             if not exp:
                 continue
@@ -872,30 +985,14 @@ async def check_command(update: Update, context: CallbackContext):
 
         msg += f"\n📊 Итого: {len(expired)} истекших, {len(expiring)} скоро"
 
-        if len(msg) > 4096:
-            parts = []
-            current = ""
-            for line in msg.split("\n"):
-                if len(current) + len(line) + 1 > 4000:
-                    parts.append(current)
-                    current = line + "\n"
-                else:
-                    current += line + "\n"
-            if current:
-                parts.append(current)
-            for part in parts:
-                await update.message.reply_text(part.strip(), parse_mode='HTML')
-        else:
-            await update.message.reply_text(msg, parse_mode='HTML')
+        await send_long_message(update, msg)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def test_notify_command(update: Update, context: CallbackContext):
     """Тест уведомлений"""
-    if update.message.from_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Только для админа.")
-        return
     await update.message.reply_text("🧪 Запускаю проверку уведомлений...")
     try:
         await check_and_send_notifications()
@@ -904,11 +1001,9 @@ async def test_notify_command(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def cleanup_mutex_command(update: Update, context: CallbackContext):
     """Очистить Windows mutex"""
-    if update.message.from_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Только для админа.")
-        return
     try:
         if sys.platform == 'win32':
             mutex_name = "Global\\TelegramBotMutex_" + os.path.basename(__file__)
@@ -929,6 +1024,7 @@ async def cleanup_mutex_command(update: Update, context: CallbackContext):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
+@admin_only
 async def handle_text(update: Update, context: CallbackContext):
     """Ответ на любые текстовые сообщения"""
     await update.message.reply_text(
@@ -961,6 +1057,7 @@ async def start_notification_scheduler_async():
                     # Не ставим last_check_date — попробуем снова через 5 мин
                     await asyncio.sleep(300)
                     continue
+            write_healthcheck()
             await asyncio.sleep(30)
         except asyncio.CancelledError:
             break
@@ -990,15 +1087,25 @@ stop_event = threading.Event()
 
 
 # ===== Main =====
+HEALTHCHECK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'healthcheck')
+
+def write_healthcheck():
+    """Обновляет файл healthcheck с текущим timestamp"""
+    try:
+        os.makedirs(os.path.dirname(HEALTHCHECK_FILE), exist_ok=True)
+        with open(HEALTHCHECK_FILE, 'w') as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        pass
+
+
 async def main():
     global bot_application
 
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
+    if not validate_config():
         return
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        logger.error("❌ SUPABASE_URL или SUPABASE_KEY не установлены!")
-        return
+
+    load_stats()
 
     application = (
         Application.builder()

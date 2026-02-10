@@ -22,9 +22,9 @@ RUN mkdir -p data
 # Переменные окружения задаются в Portainer (Environment variables):
 # TELEGRAM_BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY, ADMIN_ID
 
-# Healthcheck — проверяем что процесс Python жив
-HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "import os, signal; os.kill(1, 0)" || exit 1
+# Healthcheck — проверяем что бот активен (файл обновляется каждые 30 сек)
+HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \
+    CMD python -c "import os,time; t=int(open('/app/data/healthcheck').read()); exit(0 if time.time()-t<120 else 1)" || exit 1
 
 # Запуск с unbuffered output для корректных логов в Portainer
 ENV PYTHONUNBUFFERED=1

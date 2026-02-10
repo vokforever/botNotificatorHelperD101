@@ -243,6 +243,12 @@ tmp/
 *.old
 *_backup.py
 
+# One-time scripts and tests
+fix_*.py
+add_*.py
+test_*.py
+*.ps1
+
 # Configuration files with sensitive data
 config.ini
 secrets.json
