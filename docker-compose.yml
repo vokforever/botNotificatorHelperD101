@@ -6,16 +6,27 @@ services:
     container_name: bot-notificator-helper
     restart: unless-stopped
     environment:
-      - USE_LOCAL=false
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_KEY=${SUPABASE_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
       - ADMIN_ID=${ADMIN_ID}
+      - TZ=Europe/Moscow
     volumes:
-      - ./data:/app/data
+      - bot-data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - bot-network
+
+volumes:
+  bot-data:
 
 networks:
   bot-network:

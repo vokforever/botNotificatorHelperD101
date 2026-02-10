@@ -229,7 +229,7 @@ temp/
 tmp/
 
 # Docker
-.dockerignore
+# .dockerignore — оставляем в репо, нужен для сборки
 
 # Coolify
 .coolify/
