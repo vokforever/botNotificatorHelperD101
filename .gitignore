@@ -172,6 +172,9 @@ cython_debug/
 # Cursor IDE
 .cursor/
 
+# Windsurf IDE
+.windsurf/
+
 # Sublime Text
 *.sublime-project
 *.sublime-workspace
@@ -238,6 +241,7 @@ tmp/
 *.bak
 *.backup
 *.old
+*_backup.py
 
 # Configuration files with sensitive data
 config.ini
